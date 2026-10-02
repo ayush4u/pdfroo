@@ -1522,6 +1522,13 @@
       if (prog) pf.toUnicode.forEach((u, code) => {
         if (typeof u === 'string' && u && !rev.has(u) && prog.has(code) && hasW(code) && explicit(code)) rev.set(u, code);
       });
+      // a sibling must be the same face: variable-font instances (Typst) share one name across weights, so compare the
+      // advance widths of characters both objects show
+      if (cands.length) {
+        const m = cands[0]; let n = 0, bad = 0;
+        rev.forEach((code, u) => { const mc = m.rev.get(u); if (mc == null || u === ' ') return; const w1 = m.pf.widths[mc], w2 = pf.widths[code]; if (!(w1 > 0 && w2 > 0)) return; n++; if (Math.abs(w1 - w2) > 0.015 * Math.max(w1, w2) + 1) bad++; });
+        if (bad > 0 && bad >= 0.1 * n) return;
+      }
       cands.push({ key: keys[0], pfName, pf, lf, rev });
     };
     add(ln.fontKeys || [ln.fontKey], ln.fontName);
@@ -1881,7 +1888,7 @@
 
   /** Apply text edits to a pdf-lib page (must run before any other drawing on that page). */
   let lastDroppedReps = [];
-  async function applyTextEditsToPage(doc, page, edits, srcSim, fontsForDoc, shifts) {
+  async function applyTextEditsToPage(doc, page, edits, srcSim, fontsForDoc, shifts, showBoxes) {
     lastDroppedReps = [];
     const L = root.PDFLib, T = TI();
     const removed = new Set(), movedInStream = new Set();
@@ -1909,7 +1916,7 @@
         // "Add like this": vector paths, images and forms below the insertion point move with the text
         for (const sh of shows) {
           if (consumed.has(sh.i) || !sh.start || !sh.m || showRotated(sh)) continue;
-          const d = RF().shiftFor(showBox(sh), shifts); if (!d) continue;
+          const d = RF().shiftFor((showBoxes && showBoxes[sh.i]) || showBox(sh), shifts); if (!d) continue;
           const mv = T.movedFor(sh, ops[sh.i], 0, d, str.slice(sh.s, sh.e));
           if (mv) reps.push({ s: sh.s, e: sh.e, text: mv });
         }
@@ -2004,7 +2011,7 @@
       const d = await L.PDFDocument.create();
       const [cp] = await d.copyPages(s.libDoc, [pg.index]);
       const page = d.addPage(cp);
-      await applyTextEditsToPage(d, page, edits, s.simFonts && s.simFonts[pg.index], docFontLoader(d), pg.shifts);
+      await applyTextEditsToPage(d, page, edits, s.simFonts && s.simFonts[pg.index], docFontLoader(d), pg.shifts, pg.shifts && pg.shifts.length ? (await pageGeometry(pg.src, pg.index)).boxes : null);
       if (d.__folioIndic) d.__folioIndic.finalize();
       const bytes = await d.save();
       return pdfjsLib.getDocument({ data: bytes, cMapUrl: BASE + 'vendor/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: BASE + 'vendor/pdfjs/standard_fonts/', isEvalSupported: false, verbosity: pdfjsLib.VerbosityLevel ? pdfjsLib.VerbosityLevel.ERRORS : 0 }).promise;
@@ -2395,7 +2402,7 @@
         rotForMatrix = total;
         if (((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length)) && p.sources[pg.src].libDoc) {
           await analyzePage(pg.src, pg.index);
-          await applyTextEditsToPage(out, page, pg.textEdits || [], p.sources[pg.src].simFonts && p.sources[pg.src].simFonts[pg.index], editFonts, pg.shifts);
+          await applyTextEditsToPage(out, page, pg.textEdits || [], p.sources[pg.src].simFonts && p.sources[pg.src].simFonts[pg.index], editFonts, pg.shifts, pg.shifts && pg.shifts.length ? (await pageGeometry(pg.src, pg.index)).boxes : null);
         }
       } else {
         page = out.addPage([Dw, Dh]);
@@ -2541,18 +2548,36 @@
   async function pageGeometry(src, index) {
     const key = src + ':' + index;
     if (geoCache.has(key)) return geoCache.get(key);
+    const an = await analyzePage(src, index);     // simulated widths come from the analysed fonts
     const L = root.PDFLib, T = TI();
     const lp = sources[src].libDoc.getPage(index);
     const str = T.contentString(L, lp), ops = T.parseOps(str);
     const scan = RF().scanGeometry(ops, xinfoFor(L, lp.node.Resources()));
     const g = { scan, annots: annotRects(L, lp.node).map((a) => ({ i: a.i, sub: a.sub, bbox: a.bbox })) };
     // text show ops on the page (not inside forms): moved by geometry like paths
-    const sim = sources[src].simFonts && sources[src].simFonts[index];
+    // pdf.js reports widths in the font's own units: a font whose FontMatrix isn't 1/1000 (an OpenType CFF font with
+    // 2048 or 2000 units per em, a Type 3 font) needs them scaled, or a run's box comes out twice as long
+    const sim0 = sources[src].simFonts && sources[src].simFonts[index];
+    let sim = sim0;
+    if (sim0) {
+      sim = {};
+      for (const [k, f] of Object.entries(sim0)) {
+        const lf = an.libFonts[k], pf = lf && lf.pdfjs && an.pfonts[lf.pdfjs];
+        const fm = pf && pf.fo && pf.fo.fontMatrix;
+        const sc = fm ? Math.hypot(fm[0], fm[1]) * 1000 : 1;
+        if (!fm || !isFinite(sc) || sc <= 0 || Math.abs(sc - 1) < 1e-3) { sim[k] = f; continue; }
+        const w = {}; for (const c in f.widths) w[c] = f.widths[c] * sc;
+        sim[k] = Object.assign({}, f, { widths: w, defaultWidth: (f.defaultWidth || 0) * sc });
+      }
+    }
     g.texts = [];
     try {
+      g.boxes = {};
       for (const sh of T.simulate(ops, sim)) {
         if (!sh.start || !sh.m) continue;
-        g.texts.push({ i: sh.i, box: showBox(sh), rot: showRotated(sh), movable: !showRotated(sh) && !!T.movedFor(sh, ops[sh.i], 0, -1, str.slice(sh.s, sh.e)), text: sh.text || '' });
+        const box = showBox(sh);
+        g.boxes[sh.i] = box;
+        g.texts.push({ i: sh.i, box, rot: showRotated(sh), movable: !showRotated(sh) && !!T.movedFor(sh, ops[sh.i], 0, -1, str.slice(sh.s, sh.e)), text: sh.text || '' });
       }
     } catch (e) { g.textError = e.message; }
     geoCache.set(key, g);
@@ -2566,13 +2591,15 @@
     if (!t1 && ln.removal === 'stream') { try { await ensureFontkit(); t1 = tier1Plan(an, ln, text, true); } catch (e) { t1 = null; } }
     let sub = null, w = t1 ? t1.width : 0;
     const cps = Array.from(text.replace(/\s/g, ''), (ch) => ch.codePointAt(0));
-    for (const cand of [ln.sub && ln.sub.t2, ln.sub && ln.sub.t3]) {
+    // a Hindi / Indic line's own substitute is a shaping font; Latin text typed under it uses Noto Sans
+    const latinFallback = ln.indic ? { key: 'NotoSans-' + (ln.bold ? 'Bold' : 'Regular'), label: 'Noto Sans' + (ln.bold ? ' Bold' : ''), tier: 3, plain: true } : null;
+    for (const cand of [ln.sub && ln.sub.t2, ln.sub && ln.sub.t3, latinFallback]) {
       if (!cand || cand.indic) continue;
       let f; try { f = await getEditFont(cand.key); } catch (e) { continue; }
       if (!cps.every((cp) => f.fk.hasGlyphForCodePoint(cp))) continue;
       const natural = f.fk.layout(ln.text).advanceWidth / f.fk.unitsPerEm * ln.size * ln.hs;
       const n = Array.from(ln.text).length;
-      let tc = n ? (ln.width - natural) / (n * ln.hs) : 0;
+      let tc = n && !cand.plain ? (ln.width - natural) / (n * ln.hs) : 0;
       tc = Math.max(-0.08 * ln.size, Math.min(0.08 * ln.size, tc)); if (Math.abs(tc) < 0.002 * ln.size) tc = 0;
       sub = { key: cand.key, label: cand.label, tier: cand.tier, tc: Math.round(tc * 10000) / 10000, tz: Math.round(ln.hs * 10000) / 100 };
       if (!t1) w = (f.fk.layout(text).advanceWidth / f.fk.unitsPerEm * ln.size + sub.tc * Array.from(text).length) * sub.tz / 100;
@@ -2698,7 +2725,14 @@
       if (s >= 0 && isStart(col[s])) {
         const tx = col[s].textX; let e = s;
         while (e + 1 < col.length && !isStart(col[e + 1]) && gap(col[e], col[e + 1]) <= 1.3 * lead && Math.abs(col[e + 1].x0 - tx) < 2.5 && Math.abs(col[e + 1].size - col[s].size) < 0.1 * sz) e++;
-        if (i <= e) item = { start: s, end: e, rows: col.slice(s, e + 1) };
+        // a real list: the item wraps, or a neighbouring item with the same marker at the same x sits close by
+        // (an icon before "Location" or a phone number is a marker too, but it has no list neighbours)
+        const mk = (r) => (r.bulletRun ? String(r.bulletRun.text).trim() + '@' + Math.round(r.bulletRun.x) : r.inlineBullet ? r.inlineBullet + '@' + Math.round(r.x0) : null);
+        const m0 = mk(col[s]);
+        let nb = false;
+        for (let k = s - 1; k >= 0 && gap(col[k], col[s]) <= 2.6 * lead * (s - k); k--) if (isStart(col[k])) { nb = mk(col[k]) === m0 && gap(col[k], col[s]) <= Math.max(2.6 * lead, (s - k + 1) * 1.4 * lead); break; }
+        if (!nb && e + 1 < col.length && isStart(col[e + 1]) && mk(col[e + 1]) === m0 && gap(col[e], col[e + 1]) <= 2.2 * lead) nb = true;
+        if (i <= e && (e > s || nb)) item = { start: s, end: e, rows: col.slice(s, e + 1) };
       }
     }
     // heading: bold / caps / bigger than the body text, short, followed by body rows
@@ -2725,6 +2759,7 @@
     if (!pg || pg.src == null || !sources[pg.src] || !sources[pg.src].libDoc) return no('This page has no text to add to.');
     if (totalRotation(pg)) return no('Rotate the page back to upright first — adding lines works on upright pages.');
     const an = await analyzePage(pg.src, pg.index);
+    if (!an.lines.length || (an.refusal && an.refusal.code === 'ocr')) return no('Adding lines needs real text, and this page has none: ' + ((an.refusal && an.refusal.message) || 'there’s no text layer.'), { refused: an.refusal ? an.refusal.code : 'empty' });
     const geo = await pageGeometry(pg.src, pg.index);
     const view = an.page.view;
     const cur = currentLines(an, pg);
@@ -2732,35 +2767,72 @@
     if (!la) return no('That line could not be found.');
     const { rows, row, st } = la;
     const { col, lead } = st;
+    // "line below" a right-hand date / place that sits in its own strip: the line goes under the title next to it
+    if (mode === 'line' && !opts._redir && !opts.region && !st.item && String(row.text).length <= 40 && row.x0 > (view[0] + view[2]) / 2) {
+      const left = rows.filter((r) => r !== row && !col.includes(r) && Math.abs(r.y - row.y) < 0.4 * row.size && r.x1 < row.x0 - row.size && r.lines.some((l) => !l.bullet)).sort((p, q) => p.x0 - q.x0)[0];
+      if (left) return planInsert(state, pageIndex, left.lines.find((l) => !l.bullet).id, mode, text, Object.assign({}, opts, { _redir: true }));
+    }
     const notes = st.notes.slice(), conflicts = [];
     let uncertain = st.uncertain;
     // what is inserted, where
     let anchorRow = row, firstGap = lead, srcRow = row, x = row.x0, xCont = row.x0;
-    let headRow = null, bodyRow = null, prefix = '', cloneBullet = null;
+    let headRow = null, bodyRow = null, prefix = '', cloneBullet = null, inlineMarker = null;
     const isStartRow = (r) => !!(r.bulletRun || r.inlineBullet);
+    // rows on one baseline (a title and its right-aligned date) are separate rows; "the row below" skips them
+    const bl = (k) => 0.4 * (col[k] ? col[k].size : row.size);
+    const nextBelow = (k) => { if (k < 0 || k >= col.length) return null; for (let j = k + 1; j < col.length; j++) if (col[k].y - col[j].y > bl(k)) return j; return null; };
+    const prevAbove = (k) => { if (k < 0 || k >= col.length) return null; for (let j = k - 1; j >= 0; j--) if (col[j].y - col[k].y > bl(k)) return j; return null; };
     if (mode === 'bullet') {
       if (!st.item) return no('This line isn’t part of a bulleted list. Use “Add line below” instead.');
       const it = st.item; anchorRow = it.rows[it.rows.length - 1]; srcRow = it.rows[0];
-      const nxt = col[it.end + 1];
+      const nxt = col[nextBelow(it.end)];
       if (nxt && (nxt.bulletRun || nxt.inlineBullet)) firstGap = anchorRow.y - nxt.y;
       else {
         // gap before this item, from the previous bullet item (if any)
-        const prev = col[it.start - 1];
+        const prev = col[prevAbove(it.start)];
         firstGap = prev && it.start > 0 && (prev.y - srcRow.y) < 2.2 * lead ? prev.y - srcRow.y : lead;
       }
       x = srcRow.textX; xCont = it.rows[1] ? it.rows[1].x0 : srcRow.textX;
       if (srcRow.bulletRun) cloneBullet = srcRow.bulletRun;
-      else { const m = String(srcRow.lines[0].text).match(/^(\S)(\s*)/); prefix = m ? m[1] + (m[2] || ' ') : ''; x = srcRow.x0; }
+      else {
+        const l0 = srcRow.lines[0], m = String(l0.text).match(/^(\S)(\s*)(.*)$/);
+        prefix = m ? m[1] + (m[2] || ' ') : ''; x = srcRow.x0;
+        // "•  text" in one run: put the marker where it is and the text where the item's text starts (measured from the run's
+        // own width), so the new bullet's indent matches instead of using a plain space
+        if (m && m[3] && m[2]) {
+          const fr = await fontPlanFor(an, l0, m[3]).catch(() => null);
+          const tx = fr && fr.t1 && fr.w > 0 ? l0.x + l0.width - fr.w : NaN;     // only measured with the run's own font
+          if (tx > l0.x + 0.3 * l0.size && tx < l0.x + 2.5 * l0.size) {
+            inlineMarker = { text: m[1], x: l0.x, src: l0 }; prefix = ''; x = tx;
+            if (!it.rows[1]) xCont = tx;
+          }
+        }
+      }
     } else if (mode === 'section') {
       if (!st.heading) return no('Select a section heading to add a section like it.');
-      const h = st.heading; headRow = col[h.index]; anchorRow = col[h.end];
-      bodyRow = h.index + 1 <= h.end ? col[h.index + 1] : null;
-      if (h.next != null) firstGap = anchorRow.y - col[h.next].y;
-      else if (h.prev != null) firstGap = col[h.index - 1].y - headRow.y;
+      const h = st.heading; headRow = col[h.index];
+      let he = h.end; if (h.next != null) while (he > h.index && col[he].y - col[h.next].y < bl(he)) he--;
+      anchorRow = col[he];
+      bodyRow = null; for (let k = h.index + 1; k <= he; k++) if (headRow.y - col[k].y > bl(h.index)) { bodyRow = col[k]; break; }
+      const pa = prevAbove(h.index);
+      if (h.next != null && col[h.next].y < anchorRow.y - bl(he)) firstGap = anchorRow.y - col[h.next].y;
+      else if (pa != null) firstGap = col[pa].y - headRow.y;
       else firstGap = 2.2 * lead;
       srcRow = headRow; x = headRow.x0; xCont = headRow.x0;
+      // "Languages / भाषाएँ" in two runs far apart: the copy starts where the whole heading does
+      const hl = col.filter((r) => r !== headRow && Math.abs(r.y - headRow.y) < 0.4 * headRow.size && r.x0 < headRow.x0 - 0.5 * headRow.size && r.x1 < headRow.x0 + 2 && Math.abs(r.size - headRow.size) < 0.6).sort((p, q) => p.x0 - q.x0)[0];
+      if (hl) { srcRow = hl; x = hl.x0; xCont = hl.x0; }
     } else if (mode === 'line' || mode === 'wrap') {
       x = row.textX; xCont = row.textX;
+      if (mode === 'line' && !st.item) {
+        // tapped a right-hand date / place next to a title: the new line starts where the title does, not in the date's strip
+        const left = col.filter((r) => r !== row && Math.abs(r.y - row.y) < 0.4 * row.size && r.x1 < row.x0 - 0.5).sort((p, q) => p.x0 - q.x0)[0];
+        const ls = row.lines.slice().sort((p, q) => p.x - q.x);
+        if (left && String(row.text).length <= 40) { x = left.x0; xCont = left.x0; }
+        // a hanging label ("2015–2017   MBA, …" or "Product   Roadmapping, …"): the new line lines up with the text after it
+        else if (ls.length >= 2 && String(ls[0].text).trim().length <= 14 && !/:\s*$/.test(String(ls[0].text)) && ls[1].x - ls[0].x >= 3 * row.size &&
+          col.some((r) => r !== row && Math.abs(r.x0 - ls[1].x) < 1.5)) { x = ls[1].x; xCont = ls[1].x; }
+      }
       if (st.item) { const it = st.item; xCont = it.rows[1] ? it.rows[1].x0 : col[it.start].textX; }
       if (mode === 'wrap') { x = xCont; srcRow = row; }
       else if (!st.item) {
@@ -2777,7 +2849,7 @@
           e++;
         }
         anchorRow = col[e]; if (e > i0) xCont = col[i0 + 1].x0;
-        const nx = col[e + 1];
+        const nx = col[nextBelow(e)];
         if (nx && Math.abs(nx.size - row.size) < 0.1 * row.size && nx.x0 <= row.x0 + 1.5 && nx.x0 >= row.x0 - 1.5) { const g = anchorRow.y - nx.y; if (g > 1.08 * lead && g < 2.6 * lead) firstGap = g; }
         if (labelStart(row)) xCont = e > i0 ? col[i0 + 1].x0 : row.x0;
       }
@@ -2788,7 +2860,7 @@
       const isHead = (q) => st.heading && (q.bold || q.caps) && q.size >= r.size && (q === headRow || (q.caps && !/[a-z]/.test(q.text)));
       const body = col.filter((q) => !isHead(q));
       const same = body.filter((q) => Math.abs(q.size - r.size) < 0.15 * r.size);
-      let v = Math.max(...((same.length >= 2 ? same : body.length ? body : col).map((q) => q.x1)));
+      let v = Math.max(...((same.length >= 2 && r !== headRow ? same : body.length ? body : col).map((q) => q.x1)));
       v = Math.min(v, st.x1 - 1);
       if (v - r.x0 < 4 * r.size) v = Math.min(st.x1 - 1, r.x0 + 30 * r.size);
       return v;
@@ -2829,30 +2901,45 @@
     };
     const typed = String(text || '').replace(/[\r\n\t]+/g, ' ').trim();
     if (!typed) return no('Type the text to add first.');
+    if (mode === 'section') {
+      // white / very light heading text sits on a coloured band; the band isn't copied, so the new heading would be invisible
+      const hc = String(pickSrc(srcRow).color || '#000000').match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+      const lum = hc ? (0.2126 * parseInt(hc[1], 16) + 0.7152 * parseInt(hc[2], 16) + 0.0722 * parseInt(hc[3], 16)) / 255 : 0;
+      // behind it: a big fill (sidebar / page background) is fine, the copy lands on it too; a short band is not copied
+      const hb = lineBox(pickSrc(srcRow)), PH = view[3] - view[1];
+      const pageBgDark = (geo.scan.items || []).some((it) => (it.kind === 'path' && it.painted && /f|F|B|b/.test(String(it.paint || '')) || it.kind === 'image') &&
+        it.bbox[0] <= hb[0] + 1 && it.bbox[2] >= hb[2] - 1 && it.bbox[1] <= hb[1] - 3 * lead && it.bbox[3] >= hb[3] && (it.bbox[3] - it.bbox[1]) > 0.25 * PH);
+      if (lum > 0.8 && !pageBgDark) return no('This heading is light text on a coloured band, and copying the band isn’t supported yet — use “Add line below” under the heading instead.', { refused: 'band' });
+    }
+    const noFontMsg = hasIndic(typed + ' ' + (opts.body || '')) || COMPLEX_SCRIPT_RE.test((typed + ' ' + (opts.body || '')).replace(INDIC_STRIP_RE, ''))
+      ? 'Adding new lines in Hindi or other Indic / complex scripts isn’t supported yet — use the Text tool for those.'
+      : 'Some of these characters aren’t available in the matching fonts.';
     const y1 = anchorRow.y - firstGap;
     let height = firstGap, n;
     if (mode === 'section') {
       n = await layoutPara(headRow, typed, y1, x, x, true);
-      if (n == null) return no('Some of these characters aren’t available in the matching fonts.');
+      if (n == null) return no(noFontMsg);
       height += (n - 1) * lead;
       const body = String(opts.body || '').replace(/[\r\n\t]+/g, ' ').trim();
       if (body && bodyRow) {
         const hb = headRow.y - bodyRow.y;
         const yb = y1 - (n - 1) * lead - hb;
-        const nb = await layoutPara(bodyRow, body, yb, bodyRow.textX, bodyRow.x0, true);
-        if (nb == null) return no('Some of these characters aren’t available in the matching fonts.');
+        // continuation lines align with the body text (not with a date / label column to its left)
+        const nb = await layoutPara(bodyRow, body, yb, bodyRow.textX, bodyRow.bulletRun || bodyRow.inlineBullet ? bodyRow.textX : (labelSplit(bodyRow, body) ? bodyRow.x0 : bodyRow.textX), true);
+        if (nb == null) return no(noFontMsg);
         height += hb + (nb - 1) * lead;
         if (bodyRow.bulletRun) newRows[newRows.length - nb].clone = { src: bodyRow.bulletRun, x: bodyRow.bulletRun.x };
       }
     } else {
       n = await layoutPara(srcRow, typed, y1, x, xCont, true);
-      if (n == null) return no('Some of these characters aren’t available in the matching fonts.');
+      if (n == null) return no(noFontMsg);
       height += (n - 1) * lead;
       if (cloneBullet) newRows[0].clone = { src: cloneBullet, x: cloneBullet.x };
+      if (inlineMarker) newRows[0].lines.unshift(inlineMarker);
     }
     const dy = -Math.round(height * 1000) / 1000;
     // the cut: halfway between the anchor and the next row in the column
-    const ai = col.indexOf(anchorRow), nextRow = col[ai + 1];
+    const ai = col.indexOf(anchorRow), nextRow = col[nextBelow(ai)];
     let yCut = nextRow ? anchorRow.y - Math.min(anchorRow.y - nextRow.y, 3 * lead) / 2 : anchorRow.y - 0.6 * lead;
     // under body text the cut sits right below the line, so a divider between it and the next item moves with what's below;
     // under a heading it stays halfway (the heading's own underline stays with the heading)
@@ -2863,7 +2950,15 @@
     const crosses = (bb) => (bb[0] < st.x0 - 1 && bb[2] > st.x0 + 1) || (bb[0] < st.x1 - 1 && bb[2] > st.x1 + 1);
     const W = view[2] - view[0], H = view[3] - view[1];
     const geoItems = geo.scan.items.map((it, k) => { const d = RF().shiftFor(it.bbox, pg.shifts); return { k, it, bb: [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d] }; });
-    const isBackground = (bb) => (bb[2] - bb[0]) > 0.5 * W && (bb[3] - bb[1]) > 0.4 * H || bb[0] <= st.x0 + 2 && bb[2] >= st.x1 - 2 && (bb[3] - bb[1]) > 0.4 * H;
+    // backgrounds / containers never move: page-size fills, full-height column or sidebar boxes (also one that only
+    // holds this column's text, or a neighbouring sidebar that pokes a few points into this column)
+    const isBackground = (bb) => {
+      if ((bb[3] - bb[1]) <= 0.4 * H) return false;
+      if ((bb[2] - bb[0]) > 0.5 * W || (bb[0] <= st.x0 + 2 && bb[2] >= st.x1 - 2)) return true;
+      if (bb[0] <= row.x0 + 2 && bb[2] >= row.x1 - 2) return true;
+      const ov = Math.min(bb[2], st.x1) - Math.max(bb[0], st.x0);
+      return ov < Math.max(8, 0.1 * (bb[2] - bb[0]));
+    };
     let spanTop = null;
     for (const r of rows) if (r.y < yCut && crosses([r.x0, 0, r.x1, 0])) spanTop = Math.max(spanTop == null ? -Infinity : spanTop, r.top + 0.5);
     for (const g of geoItems) {
@@ -2890,7 +2985,9 @@
     }
     const inR = (bb) => RF().inRegion(bb, rects, 1);
     // what moves
-    const moveLines = cur.filter((l) => !row.lines.includes(l) && l.y < yCut && inR(probeBox(l)));
+    // rotated / vertical text (margin labels, diagonal badges) is decoration: it stays where it is
+    const rotLine = (l) => !l.inserted && (l.vertical || Math.abs(l.b || 0) > 0.02 * l.size || Math.abs(l.c || 0) > 0.02 * l.size);
+    const moveLines = cur.filter((l) => !row.lines.includes(l) && !rotLine(l) && l.y < yCut && inR(probeBox(l)));
     const moveGeo = geoItems.filter((g) => g.it.kind !== 'shading' && inR(g.bb));
     const moveAnn = geo.annots.map((a) => { const d = RF().shiftFor(a.bbox, pg.shifts); return Object.assign({}, a, { bb: [a.bbox[0], a.bbox[1] + d, a.bbox[2], a.bbox[3] + d] }); }).filter((a) => inR(a.bb));
     const moveApp = (pg.annots || []).filter((a) => inR(appAnnotBox(a, view)));
@@ -2901,9 +2998,21 @@
       const ov = Math.min(g.bb[2], st.x1) - Math.max(g.bb[0], st.x0);
       if (ov > 2 && g.bb[3] > yCut + 0.3 * lead && g.bb[1] < yCut - 0.3 * lead && g.bb[1] > view[1] + 2) conflicts.push({ kind: 'cut', bbox: g.bb, message: 'A box or table crosses the place where the new line goes, so it can’t be moved safely.' });
     }
-    for (const l of moveLines) {
-      if (l.inserted) continue;
-      if (!l.movable && !l.editable && String(l.text).trim()) conflicts.push({ kind: 'locked', bbox: lineBox(l), message: 'Some text below can’t be moved (it sits inside a reusable block).' });
+    // text drawn inside a Form XObject (e.g. a whole page wrapped by pdfpages) can't be shifted from the page stream;
+    // every other run (incl. Type 3 / per-glyph text) is checked run by run below
+    {
+      // every line that should move must be drawn by a page-stream run that moves with it
+      const formShows = an.shows.filter((x) => x.form);
+      const runs = (geo.texts || []).filter((t) => !t.rot).map((t) => { const d0 = RF().shiftFor(t.box, pg.shifts); return [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0]; });
+      for (const l of moveLines) {
+        if (l.inserted || l.edit || !l.orig || !String(l.text).trim()) continue;
+        const pb = probeBox(l), cy = (pb[1] + pb[3]) / 2;
+        const covered = runs.some((bb) => Math.abs((bb[1] + bb[3]) / 2 - cy) < 0.45 * l.size && Math.min(bb[2], pb[2]) - Math.max(bb[0], pb[0]) > -0.2 * l.size && inR(bb));
+        if (covered) continue;
+        if (formShows.length && lineShows(formShows, l.orig).length) conflicts.push({ kind: 'form', bbox: lineBox(l), message: 'The text below is drawn inside an embedded block (a Form XObject — e.g. a page imported whole from another PDF), so it can’t be moved line by line.' });
+        else conflicts.push({ kind: 'locked', bbox: lineBox(l), message: 'Some text below couldn’t be traced to the page’s drawing commands, so it can’t be moved safely.' });
+        break;
+      }
     }
     const movedGeoKeys = new Set(moveGeo.map((g) => g.k));
     for (const g of moveGeo) {
@@ -2936,7 +3045,13 @@
     // room on the page
     const topMargin = view[3] - Math.max(...rows.map((r) => r.top));
     const lowest = Math.min(...rows.map((r) => r.bottom), ...geoItems.filter((g) => g.it.painted !== false && g.it.kind !== 'shading' && !isBackground(g.bb)).map((g) => g.bb[1]));
-    const bottomLimit = Math.min(view[1] + Math.max(18, Math.min(72, topMargin)), lowest);
+    let bottomLimit = Math.min(view[1] + Math.max(18, Math.min(72, topMargin)), lowest);
+    // a container box (sidebar background, frame) around this text: what moves must stay inside it
+    for (const g of geoItems) {
+      const bb = g.bb;
+      if (g.it.kind !== 'path' || !g.it.painted || (bb[3] - bb[1]) <= 0.4 * H || !(bb[0] <= row.x0 + 2 && bb[2] >= row.x1 - 2 && bb[3] >= row.top && bb[1] <= row.bottom)) continue;
+      if (bb[1] > view[1] + 4) bottomLimit = Math.max(bottomLimit, Math.min(bb[1] + 4, row.bottom));
+    }
     const newBottom = Math.min(...newRows.map((r) => r.y - 0.25 * srcRow.size), ...moveLines.map((l) => lineBox(l)[1] + dy), ...moveGeo.map((g) => g.bb[1] + dy));
     const overflow = newBottom < bottomLimit - 0.5 ? Math.round((bottomLimit - newBottom) * 10) / 10 : 0;
     // preview geometry (display points)
@@ -3135,7 +3250,7 @@
     rotatePage, deletePage, duplicatePage, reorderPages, addBlankPage, merge,
     // export
     // existing-text editing (tiers 1–3; see README)
-    _droppedReps: () => lastDroppedReps.slice(),
+    _droppedReps: () => lastDroppedReps.slice(), _pageGeometry: pageGeometry,
     getTextLines, editTextLine, moveTextLine, getAddOptions, planInsert, applyInsert, planWrapEdit, previewWrapEdit, applyWrapEdit, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
     _fontReading: async (src, index, lineId, dbg) => { const an = await analyzePage(src, index); const ln = an.lines.find((l) => l.id === lineId); fontDbg = dbg || null; try { return ln && await fontReadingFor(an, ln, null); } finally { fontDbg = null; } },
     exportWithAnnotations, getLastExportFonts: () => Object.assign({}, lastExportFonts), isComplexScript: (t) => COMPLEX_SCRIPT_RE.test(String(t).replace(INDIC_STRIP_RE, '')), hasIndic, ensureScriptFonts, indicMalformed,

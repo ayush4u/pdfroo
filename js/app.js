@@ -747,7 +747,12 @@
       e.preventDefault();
       const ln = data.lines.find((l) => l.id === r.dataset.line);
       if (!ln) return;
-      if (!ln.editable && !ln.movable) { toast(ln.reason, 'error'); return; }
+      if (!ln.editable && !ln.movable) {                            // locked (e.g. Type 3 text): say why, but keep it selectable
+        toast(ln.reason, 'error');                                  // so "Add like this" can still put a line below it
+        if (ui.lineEdit) commitLineEdit();
+        ui.runSel = { pageId: curPage().id, ids: [ln.id] }; renderOverlay(); buildPropbar();
+        return;
+      }
       if (e.shiftKey || e.ctrlKey || e.metaKey) {                   // build a group of runs (nudge / align left edges)
         const ids = runSel().slice(); const k = ids.indexOf(ln.id);
         if (ui.lineEdit && !ids.includes(ui.lineEdit.ln.id)) ids.push(ui.lineEdit.ln.id);
@@ -1040,7 +1045,8 @@
   const NUDGE = 0.5, NUDGE_BIG = 5;
   /** Queue a nudge (displayed-page points); presses are accumulated and applied together. */
   function nudgeRuns(ddx, ddy) {
-    const ids = runSel().length ? runSel() : (ui.lineEdit ? [ui.lineEdit.ln.id] : []);
+    const ld = ui.lines && ui.lines.data;
+    const ids = (runSel().length ? runSel() : (ui.lineEdit ? [ui.lineEdit.ln.id] : [])).filter((id) => { const l = ld && ld.lines.find((x) => x.id === id); return !l || l.movable; });
     if (!ids.length) return false;
     const n = ui.nudge || (ui.nudge = { pageId: curPage().id, ids: ids.slice(), ddx: 0, ddy: 0, snap: snapshot() });
     n.ddx += ddx; n.ddy += ddy;

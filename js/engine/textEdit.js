@@ -371,7 +371,10 @@
             if (ed.get(L.PDFName.of('BaseEncoding'))) encExplicit = 'all';
             else {
               const diff = ed.lookupMaybe(L.PDFName.of('Differences'), L.PDFArray); const codes = [];
-              if (diff) { let c = 0; for (let i = 0; i < diff.size(); i++) { const v = diff.get(i); if (v instanceof L.PDFNumber) c = v.asNumber(); else { codes.push(c); c++; } } }
+              // a subset Type 1 font lists the glyphs it really holds in /CharSet: codes whose glyph isn't there would print blank
+              let cs = null;
+              try { const c0 = desc && desc.lookup(L.PDFName.of('CharSet')); const t = c0 && (c0.decodeText ? c0.decodeText() : String(c0)); if (t && /\//.test(t)) cs = new Set(t.replace(/^\(|\)$/g, '').split('/').filter(Boolean)); } catch (e) { cs = null; }
+              if (diff) { let c = 0; for (let i = 0; i < diff.size(); i++) { const v = diff.get(i); if (v instanceof L.PDFNumber) c = v.asNumber(); else { if (!cs || cs.has(String(v).replace(/^\//, ''))) codes.push(c); c++; } } }
               encExplicit = codes;
             }
           }
