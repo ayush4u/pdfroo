@@ -219,7 +219,7 @@
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         return;
       }
-      const edited = pg.textEdits && pg.textEdits.length && sources[pg.src].libDoc;
+      const edited = ((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length)) && sources[pg.src].libDoc;
       const page = edited ? await (await getEditedProxy(pg)).getPage(1) : await sources[pg.src].pdf.getPage(pg.index + 1);
       if (cancelled) return;
       const vp = page.getViewport({ scale: s, rotation: totalRotation(pg) });
@@ -1190,7 +1190,19 @@
     const t0 = performance.now();
     const an = await analyzePage(pg.src, pg.index);
     const ln = an.lines.find((l) => l.id === lineId);
-    if (!ln) return { ok: false, message: 'That line could not be found.' };
+    if (!ln) {
+      // a line added with "Add like this": retype it in the same font plan; empty text removes it
+      const ie = (pg.textEdits || []).find((x) => x.lineId === lineId && x.insert && x.kind === 'text');
+      if (!ie) return { ok: false, message: 'That line could not be found.' };
+      const text = String(newText).replace(/[\r\n\t]+/g, ' ').replace(/\s+$/, '');
+      if (!text.trim()) { pg.textEdits = pg.textEdits.filter((x) => x !== ie); return { ok: true, edit: null, message: 'Added line removed.' }; }
+      const src = an.lines.find((l) => l.id === ie.srcLineId);
+      const fp = src && await fontPlanFor(an, src, text);
+      if (!fp) return { ok: false, message: 'Some of these characters aren’t available in the matching fonts.' };
+      Object.assign(ie, { text, tier: fp.tier, label: fp.label, t1: fp.t1, sub: fp.sub, newW: Math.round(fp.w * 1000) / 1000 });
+      const over = await columnOverflow(state, pageIndex, lineId);
+      return { ok: true, edit: ie, message: 'Text replaced.', overflow: over };
+    }
     if (!ln.editable) return { ok: false, message: ln.reason };
     const V = await verifyLib();
     let font = null;
@@ -1288,7 +1300,7 @@
     const out = [];
     for (const ln of an.lines) {
       const e = edits.find((x) => x.lineId === ln.id);
-      const mv = e && e.move ? e.move : { dx: 0, dy: 0 };
+      const mv = e && e.move ? e.move : { dx: 0, dy: e ? 0 : lineShift(pg, ln) };
       let w = ln.width;
       if (e) { const f = e.sub && editFontCache[e.sub.key] ? await editFontCache[e.sub.key] : null; w = e.newW != null && !e.moveOnly ? Math.max(1, e.newW) : Math.max(w, editWidth(e, f && f.fk)); }
       // outline polygon along the text direction (rotated lines get a rotated outline)
@@ -1314,11 +1326,24 @@
         bullet: !!ln.bullet, strayBullet: null, pdf: { x: ln.x + mv.dx, y: ln.y + mv.dy, size: ln.size, width: ln.width },
       });
     }
+    // lines added with "Add like this" are editable too
+    for (const e of edits) {
+      if (!e.insert || e.kind !== 'text') continue;
+      const src = an.lines.find((l) => l.id === e.srcLineId) || {};
+      const mv = e.move || { dx: 0, dy: 0 }, g = e.geo, w = Math.max(e.newW || 0, 0.3 * g.size);
+      const c = (u, v) => vp.convertToViewportPoint(g.x + mv.dx + u, g.y + mv.dy + v);
+      const poly = [c(0, g.desc * g.size), c(w, g.desc * g.size), c(w, g.asc * g.size), c(0, g.asc * g.size)];
+      const xs = poly.map((q) => q[0]), ys = poly.map((q) => q[1]), x0 = Math.min(...xs), y0 = Math.min(...ys);
+      out.push({ id: e.lineId, x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0, poly: poly.map((q) => [+q[0].toFixed(2), +q[1].toFixed(2)]),
+        text: e.text, original: '', edited: true, editable: true, reason: null, fontLabel: src.fontLabel, size: g.size, origSize: g.size, color: e.color, bg: e.bg,
+        bold: !!src.bold, italic: !!src.italic, style: null, align: null, label: e.label, tier: e.tier, rotation: totalRotation(pg), indic: false, verify: null, verified: true,
+        movable: false, moved: false, move: null, moveOnly: false, bullet: false, strayBullet: null, inserted: true, group: e.group, pdf: { x: g.x + mv.dx, y: g.y + mv.dy, size: g.size, width: e.newW || 0 } });
+    }
     // stray bullets, with the current (moved) positions
-    const pos = (l) => { const e = edits.find((x) => x.lineId === l.id); return { x: l.x + (e && e.move ? e.move.dx : 0), y: l.y + (e && e.move ? e.move.dy : 0) }; };
+    const pos = (l) => { const e = edits.find((x) => x.lineId === l.id); return { x: l.x + (e && e.move ? e.move.dx : 0), y: l.y + (e ? (e.move ? e.move.dy : 0) : lineShift(pg, l)) }; };
     for (const o of out) {
       const ln = an.lines.find((l) => l.id === o.id);
-      if (!ln.bullet) continue;
+      if (!ln || !ln.bullet) continue;
       const t = bulletTarget(ln, an.lines, pos);
       if (!t) continue;
       const dy = pos(t).y - pos(ln).y;
@@ -1622,10 +1647,11 @@
     if (style.color && ln.color && style.color.toLowerCase() === String(ln.color).toLowerCase()) delete style.color;
     const styled = Object.keys(style).some((k) => k !== 'align');
     const moveOnly = !!(opts && opts.moveOnly);
-    const keepMove = (prevEdits.find((x) => x.lineId === lineId) || {}).move || null;
+    const base0 = lineShift(pg, ln);
+    const keepMove = (prevEdits.find((x) => x.lineId === lineId) || {}).move || (prevE ? null : base0 ? { dx: 0, dy: base0 } : null);
     if (!moveOnly && keepMove && text === ln.text) {        // text put back on a moved line: keep just the move
       pg.textEdits = prevEdits.filter((e) => e.lineId !== lineId);
-      return moveTextLine(state, pageIndex, lineId, keepMove.dx, keepMove.dy);
+      return moveTextLine(state, pageIndex, lineId, keepMove.dx, keepMove.dy - base0);
     }
     if (moveOnly || styled) { /* same text, new position or style */ } else if (text === ln.text || (ln.verify && ln.verifiedText && text === ln.verifiedText && !(opts && opts.repair))) { pg.textEdits = prevEdits.filter((e) => e.lineId !== lineId); return { ok: true, edit: null, message: 'Line restored to the original text.' }; }
     const fail = (message) => { pg.textEdits = prevEdits; return { ok: false, message }; };
@@ -1786,8 +1812,10 @@
     const prev = pg.textEdits || [];
     const ex = prev.find((e) => e.lineId === lineId);
     const r3 = (v) => Math.round(v * 1000) / 1000;
-    const mv = { dx: r3((ex && ex.move ? ex.move.dx : 0) + (dx || 0)), dy: r3((ex && ex.move ? ex.move.dy : 0) + (dy || 0)) };
-    const zero = Math.abs(mv.dx) < 1e-3 && Math.abs(mv.dy) < 1e-3;
+    const base = ex ? 0 : lineShift(pg, ln);                // a line already moved down by "Add like this"
+    const mv = { dx: r3((ex && ex.move ? ex.move.dx : 0) + (dx || 0)), dy: r3((ex && ex.move ? ex.move.dy : base) + (dy || 0)) };
+    const shiftNow = lineShift(pg, ln);
+    const zero = Math.abs(mv.dx) < 1e-3 && Math.abs(mv.dy - (!ex || ex.moveOnly ? shiftNow : 0)) < 1e-3;
     if (ex && !ex.moveOnly) {                                  // edited text: redraw it at the new spot
       const e2 = Object.assign({}, ex, { move: zero ? undefined : mv });
       if (zero) delete e2.move;
@@ -1852,18 +1880,23 @@
   }
 
   /** Apply text edits to a pdf-lib page (must run before any other drawing on that page). */
-  async function applyTextEditsToPage(doc, page, edits, srcSim, fontsForDoc) {
+  let lastDroppedReps = [];
+  async function applyTextEditsToPage(doc, page, edits, srcSim, fontsForDoc, shifts) {
+    lastDroppedReps = [];
     const L = root.PDFLib, T = TI();
     const removed = new Set(), movedInStream = new Set();
     const streamEdits = edits.filter((e) => e.removal === 'stream');
-    if (streamEdits.length && srcSim) {
+    shifts = shifts && shifts.length ? shifts : null;
+    if ((streamEdits.length && srcSim) || shifts) {
       const str = T.contentString(L, page);
       const ops = T.parseOps(str);
       const shows = T.simulate(ops, srcSim);
       const reps = [];
+      const consumed = new Set();
       for (const e of streamEdits) {
         const m = T.matchLine(shows, e.match);
         if (!m.ok) continue;
+        m.shows.forEach((x) => consumed.add(x.i));
         if (e.moveOnly && e.move) {                // shift the run's own text matrix: same glyphs, still real text
           const mv = m.shows.map((s) => T.movedFor(s, ops[s.i], e.move.dx, e.move.dy, str.slice(s.s, s.e)));
           if (mv.every(Boolean)) { m.shows.forEach((s, k) => reps.push({ s: s.s, e: s.e, text: mv[k] })); removed.add(e.id); movedInStream.add(e.id); continue; }
@@ -1872,10 +1905,28 @@
         m.shows.forEach((s) => reps.push({ s: s.s, e: s.e, text: T.replacementFor(s, ops[s.i]) }));
         removed.add(e.id);
       }
+      if (shifts) {
+        // "Add like this": vector paths, images and forms below the insertion point move with the text
+        for (const sh of shows) {
+          if (consumed.has(sh.i) || !sh.start || !sh.m || showRotated(sh)) continue;
+          const d = RF().shiftFor(showBox(sh), shifts); if (!d) continue;
+          const mv = T.movedFor(sh, ops[sh.i], 0, d, str.slice(sh.s, sh.e));
+          if (mv) reps.push({ s: sh.s, e: sh.e, text: mv });
+        }
+        const scan = RF().scanGeometry(ops, xinfoFor(L, page.node.Resources()));
+        RF().shiftReps(str, scan, (it) => RF().shiftFor(it.bbox, shifts)).forEach((r) => reps.push(r));
+        for (const a of annotRects(L, page.node)) {
+          const d = RF().shiftFor(a.bbox, shifts); if (!d) continue;
+          const r = a.dict.lookup(L.PDFName.of('Rect'), L.PDFArray).asArray().map((x) => (x.asNumber ? x.asNumber() : 0));
+          a.dict.set(L.PDFName.of('Rect'), doc.context.obj([r[0], r[1] + d, r[2], r[3] + d]));
+          const qp = a.dict.lookupMaybe(L.PDFName.of('QuadPoints'), L.PDFArray);
+          if (qp) a.dict.set(L.PDFName.of('QuadPoints'), doc.context.obj(qp.asArray().map((x, k) => (x.asNumber ? x.asNumber() : 0) + (k % 2 ? d : 0))));
+        }
+      }
       if (reps.length) {
         reps.sort((a, b) => b.s - a.s);
         let out = str, lastStart = Infinity;
-        for (const r of reps) { if (r.e > lastStart) continue; out = out.slice(0, r.s) + r.text + out.slice(r.e); lastStart = r.s; }
+        for (const r of reps) { if (r.e > lastStart) { lastDroppedReps.push({ s: r.s, e: r.e, text: r.text.slice(0, 80), orig: str.slice(r.s, Math.min(r.e, r.s + 80)) }); continue; } out = out.slice(0, r.s) + r.text + out.slice(r.e); lastStart = r.s; }
         const ref = doc.context.register(doc.context.flateStream(T.latin1ToBytes(out)));
         page.node.set(L.PDFName.of('Contents'), ref);
       }
@@ -1889,8 +1940,15 @@
     for (const e of edits) {
       if (movedInStream.has(e.id) || (e.moveOnly && !e.t1 && !e.sub)) continue;
       const g0 = e.geo, mv = e.move || { dx: 0, dy: 0 };
+      if (e.insert && e.kind === 'path') { content += mv.dx || mv.dy ? `q 1 0 0 1 ${f(mv.dx)} ${f(mv.dy)} cm\n${e.path}Q\n` : e.path; continue; }
+      if (e.insert && e.kind === 'clone') {
+        if (!pageFontDict || !pageFontDict.has(L.PDFName.of(e.clone.key))) continue;
+        const t = e.clone.tm;
+        content += `q BT ${rgb(e.clone.color)} rg /${e.clone.key} ${f(e.clone.Tfs)} Tf 0 Tc 0 Tw ${f(e.clone.Th * 100)} Tz 0 Ts 0 Tr ${f(t[0])} ${f(t[1])} ${f(t[2])} ${f(t[3])} ${f(t[4] + mv.dx)} ${f(t[5] + mv.dy)} Tm <${e.clone.hex}> Tj ET Q\n`;
+        continue;
+      }
       const g = Object.assign({}, g0, { x: g0.x + mv.dx + (e.alignDx || 0), y: g0.y + mv.dy, size: (e.style && e.style.size) || g0.size });
-      if (!removed.has(e.id)) {
+      if (!removed.has(e.id) && !e.insert) {
         const pad = 0.06 * g0.size;
         let y0 = g0.y + g0.desc * g0.size - pad, y1 = g0.y + g0.asc * g0.size + pad;
         if (g0.cb != null) y0 = Math.max(y0, g0.cb + 0.15);      // leave underlines / table rules alone
@@ -1933,7 +1991,7 @@
     })());
   }
 
-  const editsKey = (pg) => (pg.textEdits && pg.textEdits.length ? JSON.stringify(pg.textEdits.map((e) => [e.lineId, e.text, e.tier, e.removal, e.sub && e.sub.key, e.color, e.bg, e.fit || 1, e.move ? [e.move.dx, e.move.dy] : 0, !!e.moveOnly, e.style || 0, e.alignDx || 0, e.justify || 0, e.t1 && e.t1.tj])) : '');
+  const editsKey = (pg) => (pg.shifts && pg.shifts.length ? JSON.stringify(pg.shifts) : '') + (pg.textEdits && pg.textEdits.length ? JSON.stringify(pg.textEdits.map((e) => [e.lineId, e.text, e.tier, e.removal, e.sub && e.sub.key, e.color, e.bg, e.fit || 1, e.move ? [e.move.dx, e.move.dy] : 0, !!e.moveOnly, e.style || 0, e.alignDx || 0, e.justify || 0, e.t1 && e.t1.tj, e.insert ? [e.kind, e.geo.x, e.geo.y, e.newW] : 0])) : '');
   const previewCache = new Map();
   /** A pdf.js document holding just this page with its text edits applied (for on-screen rendering). */
   function getEditedProxy(pg) {
@@ -1946,7 +2004,7 @@
       const d = await L.PDFDocument.create();
       const [cp] = await d.copyPages(s.libDoc, [pg.index]);
       const page = d.addPage(cp);
-      await applyTextEditsToPage(d, page, edits, s.simFonts && s.simFonts[pg.index], docFontLoader(d));
+      await applyTextEditsToPage(d, page, edits, s.simFonts && s.simFonts[pg.index], docFontLoader(d), pg.shifts);
       if (d.__folioIndic) d.__folioIndic.finalize();
       const bytes = await d.save();
       return pdfjsLib.getDocument({ data: bytes, cMapUrl: BASE + 'vendor/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: BASE + 'vendor/pdfjs/standard_fonts/', isEvalSupported: false, verbosity: pdfjsLib.VerbosityLevel ? pdfjsLib.VerbosityLevel.ERRORS : 0 }).promise;
@@ -2238,7 +2296,7 @@
     if (src == null || !p.sources[src]) return false;
     if (p.pages.length !== p.sources[src].pdf.numPages) return false;
     return p.pages.every((pg, i) => pg.src === src && pg.index === i && !(((pg.rot || 0) % 360 + 360) % 360) &&
-      !(pg.annots && pg.annots.length) && !(pg.textEdits && pg.textEdits.length));
+      !(pg.annots && pg.annots.length) && !(pg.textEdits && pg.textEdits.length) && !(pg.shifts && pg.shifts.length));
   }
 
   async function exportPdf(p) {
@@ -2335,9 +2393,9 @@
         page.setRotation(degrees(total));
         box = page.getCropBox();
         rotForMatrix = total;
-        if (pg.textEdits && pg.textEdits.length && p.sources[pg.src].libDoc) {
+        if (((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length)) && p.sources[pg.src].libDoc) {
           await analyzePage(pg.src, pg.index);
-          await applyTextEditsToPage(out, page, pg.textEdits, p.sources[pg.src].simFonts && p.sources[pg.src].simFonts[pg.index], editFonts);
+          await applyTextEditsToPage(out, page, pg.textEdits || [], p.sources[pg.src].simFonts && p.sources[pg.src].simFonts[pg.index], editFonts, pg.shifts);
         }
       } else {
         page = out.addPage([Dw, Dh]);
@@ -2435,6 +2493,639 @@
   }
 
 
+  /* ---------------- "Add like this" + reflow (Phase 1: same page) ---------------- */
+  const RF = () => root.FolioReflow;
+  const geoCache = new Map();
+  /** Probe box used to decide whether text is inside a moved region: same rule for a show op and for a whole line. */
+  const showBox = (sh) => { const sz = Math.abs(sh.m[3]) || sh.Tfs || 10; const a = sh.start[0], b = (sh.inkEnd || sh.end || sh.start)[0]; return [Math.min(a, b), sh.start[1] - 0.25 * sz, Math.max(a, b), sh.start[1] + 0.8 * sz]; };
+  const showRotated = (sh) => Math.abs(sh.m[1]) > 0.02 * Math.abs(sh.m[0] || 1) || Math.abs(sh.m[2]) > 0.02 * Math.abs(sh.m[3] || 1) || (sh.m[0] || 0) <= 0 || (sh.m[3] || 0) <= 0;
+  const probeBox = (l) => [l.x, l.y - 0.25 * l.size, l.x + Math.max(l.width, 0.3 * l.size), l.y + 0.8 * l.size];
+  /** How far an untouched line has been moved by "Add like this" shifts. */
+  const lineShift = (pg, ln) => (pg.shifts && pg.shifts.length ? RF().shiftFor(probeBox(ln), pg.shifts) : 0);
+  function xinfoFor(L, resDict) {
+    const N = (n) => L.PDFName.of(n);
+    const cache = {};
+    return (name) => {
+      if (name in cache) return cache[name];
+      let r = null;
+      try {
+        const xd = resDict && resDict.lookupMaybe(N('XObject'), L.PDFDict);
+        const st = xd && xd.lookup(N(name));
+        if (st && st.dict) {
+          const sub = String(st.dict.get(N('Subtype')));
+          if (sub === '/Image') r = { type: 'image' };
+          else if (sub === '/Form') {
+            const arr = (k) => { const a = st.dict.lookupMaybe(N(k), L.PDFArray); return a ? a.asArray().map((v) => (v.asNumber ? v.asNumber() : 0)) : null; };
+            const m = arr('Matrix');
+            r = { type: 'form', bbox: arr('BBox') || [0, 0, 1, 1], matrix: m && m.length === 6 ? m : [1, 0, 0, 1, 0, 0] };
+          }
+        }
+      } catch (e) { r = null; }
+      return (cache[name] = r);
+    };
+  }
+  function annotRects(L, pageNode) {
+    const out = [];
+    try {
+      const arr = pageNode.lookupMaybe(L.PDFName.of('Annots'), L.PDFArray);
+      if (!arr) return out;
+      for (let i = 0; i < arr.size(); i++) {
+        const d = arr.lookupMaybe(i, L.PDFDict); if (!d) continue;
+        const r = d.lookupMaybe(L.PDFName.of('Rect'), L.PDFArray); if (!r || r.size() !== 4) continue;
+        const v = r.asArray().map((x) => (x.asNumber ? x.asNumber() : 0));
+        out.push({ i, dict: d, sub: String(d.get(L.PDFName.of('Subtype')) || ''), bbox: [Math.min(v[0], v[2]), Math.min(v[1], v[3]), Math.max(v[0], v[2]), Math.max(v[1], v[3])] });
+      }
+    } catch (e) { /* no annots */ }
+    return out;
+  }
+  async function pageGeometry(src, index) {
+    const key = src + ':' + index;
+    if (geoCache.has(key)) return geoCache.get(key);
+    const L = root.PDFLib, T = TI();
+    const lp = sources[src].libDoc.getPage(index);
+    const str = T.contentString(L, lp), ops = T.parseOps(str);
+    const scan = RF().scanGeometry(ops, xinfoFor(L, lp.node.Resources()));
+    const g = { scan, annots: annotRects(L, lp.node).map((a) => ({ i: a.i, sub: a.sub, bbox: a.bbox })) };
+    // text show ops on the page (not inside forms): moved by geometry like paths
+    const sim = sources[src].simFonts && sources[src].simFonts[index];
+    g.texts = [];
+    try {
+      for (const sh of T.simulate(ops, sim)) {
+        if (!sh.start || !sh.m) continue;
+        g.texts.push({ i: sh.i, box: showBox(sh), rot: showRotated(sh), movable: !showRotated(sh) && !!T.movedFor(sh, ops[sh.i], 0, -1, str.slice(sh.s, sh.e)), text: sh.text || '' });
+      }
+    } catch (e) { g.textError = e.message; }
+    geoCache.set(key, g);
+    return g;
+  }
+  /** Font plan for NEW text in the style of line ln: original font (tier 1) when every glyph is there, else the line's tier 2/3 substitute. */
+  async function fontPlanFor(an, ln, text) {
+    if (!text.trim()) return { w: 0, tier: 0, label: '' };
+    if (hasIndic(text) || COMPLEX_SCRIPT_RE.test(text.replace(INDIC_STRIP_RE, ''))) return null;
+    let t1 = ln.removal === 'stream' ? tier1Plan(an, ln, text) : null;
+    if (!t1 && ln.removal === 'stream') { try { await ensureFontkit(); t1 = tier1Plan(an, ln, text, true); } catch (e) { t1 = null; } }
+    let sub = null, w = t1 ? t1.width : 0;
+    const cps = Array.from(text.replace(/\s/g, ''), (ch) => ch.codePointAt(0));
+    for (const cand of [ln.sub && ln.sub.t2, ln.sub && ln.sub.t3]) {
+      if (!cand || cand.indic) continue;
+      let f; try { f = await getEditFont(cand.key); } catch (e) { continue; }
+      if (!cps.every((cp) => f.fk.hasGlyphForCodePoint(cp))) continue;
+      const natural = f.fk.layout(ln.text).advanceWidth / f.fk.unitsPerEm * ln.size * ln.hs;
+      const n = Array.from(ln.text).length;
+      let tc = n ? (ln.width - natural) / (n * ln.hs) : 0;
+      tc = Math.max(-0.08 * ln.size, Math.min(0.08 * ln.size, tc)); if (Math.abs(tc) < 0.002 * ln.size) tc = 0;
+      sub = { key: cand.key, label: cand.label, tier: cand.tier, tc: Math.round(tc * 10000) / 10000, tz: Math.round(ln.hs * 10000) / 100 };
+      if (!t1) w = (f.fk.layout(text).advanceWidth / f.fk.unitsPerEm * ln.size + sub.tc * Array.from(text).length) * sub.tz / 100;
+      break;
+    }
+    if (!t1 && !sub) return null;
+    return { t1, sub, w, tier: t1 ? 1 : sub.tier, label: t1 ? 'Original font: ' + ln.fontLabel : 'Substituted font: ' + sub.label };
+  }
+  /** Greedy word wrap: widths[k] is the room for line k (the last value repeats). */
+  async function wrapText(an, ln, text, widths) {
+    const words = text.replace(/\s+/g, ' ').trim().split(' ');
+    const out = []; let cur = '';
+    const room = (k) => widths[Math.min(k, widths.length - 1)];
+    for (const w of words) {
+      const cand = cur ? cur + ' ' + w : w;
+      const p = await fontPlanFor(an, ln, cand);
+      if (!p) return null;
+      if (!cur || p.w <= room(out.length) + 0.25) cur = cand;
+      else { out.push(cur); cur = w; }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  /** The page's lines where they are NOW (moves, edits, inserted lines), in PDF space. */
+  function currentLines(an, pg) {
+    const edits = pg.textEdits || [];
+    const out = [];
+    for (const ln of an.lines) {
+      const e = edits.find((x) => x.lineId === ln.id);
+      const mv = e && e.move ? e.move : { dx: 0, dy: e ? 0 : lineShift(pg, ln) };
+      const w = e && !e.moveOnly && e.newW != null ? Math.max(1, e.newW) : ln.width;
+      out.push(Object.assign({}, ln, { x: ln.x + mv.dx + (e && e.alignDx && !e.moveOnly ? e.alignDx : 0), y: ln.y + mv.dy, width: w, text: e ? e.text : ln.text, orig: ln, edit: e || null }));
+    }
+    for (const e of edits) {
+      if (!e.insert || e.kind === 'path') continue;
+      const mv = e.move || { dx: 0, dy: 0 }, src = an.lines.find((l) => l.id === e.srcLineId) || {};
+      out.push(Object.assign({}, src, { id: e.lineId, x: e.geo.x + mv.dx, y: e.geo.y + mv.dy, width: e.newW || 0, size: e.geo.size, asc: e.geo.asc, desc: e.geo.desc, text: e.kind === 'clone' ? (src.text || '•') : e.text,
+        bullet: e.kind === 'clone', inserted: true, edit: e, orig: null, movable: false, editable: e.kind !== 'clone' }));
+    }
+    return out;
+  }
+  const lineBox = (l) => [l.x, l.y + (l.desc != null ? l.desc : -0.22) * l.size, l.x + Math.max(l.width, 0.3 * l.size), l.y + (l.asc != null ? l.asc : 0.78) * l.size];
+  const median = (a) => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+
+  /** App annotations (display points, top-left origin) -> PDF-space bbox. */
+  function appAnnotBox(a, view) {
+    let x0, y0, x1, y1;
+    if (a.points) { const xs = a.points.map((p) => p[0]), ys = a.points.map((p) => p[1]); const p = (a.width || 0) / 2; x0 = Math.min(...xs) - p; x1 = Math.max(...xs) + p; y0 = Math.min(...ys) - p; y1 = Math.max(...ys) + p; }
+    else if (a.x1 != null) { const p = (a.width || 0) / 2; x0 = Math.min(a.x1, a.x2) - p; x1 = Math.max(a.x1, a.x2) + p; y0 = Math.min(a.y1, a.y2) - p; y1 = Math.max(a.y1, a.y2) + p; }
+    else if (a.type === 'text') { const m = measureText(a); x0 = a.x; y0 = a.y; x1 = a.x + m.w; y1 = a.y + m.h; }
+    else { x0 = a.x; y0 = a.y; x1 = a.x + (a.w || 0); y1 = a.y + (a.h || 0); }
+    return [view[0] + x0, view[3] - y1, view[0] + x1, view[3] - y0];
+  }
+  function moveAppAnnot(a, ddy) {
+    if (a.points) a.points = a.points.map(([x, y]) => [x, y + ddy]);
+    else if (a.x1 != null) { a.y1 += ddy; a.y2 += ddy; }
+    else a.y += ddy;
+  }
+
+  /** Which kinds of "Add like this" fit the selected line: { line, bullet, section }. */
+  async function getAddOptions(pg, lineId) {
+    if (pg.src == null || !sources[pg.src] || !sources[pg.src].libDoc || totalRotation(pg)) return { line: false, bullet: false, section: false };
+    const an = await analyzePage(pg.src, pg.index);
+    const la = layoutAround(an, currentLines(an, pg), lineId, null, await pageGeometry(pg.src, pg.index));
+    if (!la) return { line: false, bullet: false, section: false };
+    const st = la.st;
+    return { line: true, bullet: !!st.item, section: !!st.heading };
+  }
+
+  /**
+   * Rows for the page with lines kept apart across column gutters, the anchor's row and the structure around it.
+   * Gutters come from tight rows (lines merged only across word gaps) so a narrow table gutter isn't bridged.
+   */
+  function layoutAround(an, cur, anchorId, regionX, geo) {
+    const tight = RF().buildRows(cur, 0.9);
+    const trow = tight.find((r) => r.lines.some((l) => l.id === anchorId));
+    if (!trow) return null;
+    const sz = trow.size, view = an.page.view;
+    const yLo = Math.max(view[1], trow.y - 45 * sz), yHi = trow.y + 15 * sz;
+    let gut = RF().columnGutters(tight, yLo, yHi, Math.max(8, 0.9 * sz));
+    // a strip that single text runs cross (a LaTeX "title …… date" line is one TJ) is a tab gap, not a column gutter
+    if (geo && geo.texts) gut = gut.filter((g) => geo.texts.filter((t) => !t.rot && t.box[1] <= yHi && t.box[3] >= yLo && t.box[0] < g.a - 0.5 && t.box[2] > g.b + 0.5).length < 2);
+    const splits = gut.map((g) => g.mid).concat(regionX ? [regionX.x0, regionX.x1] : []);
+    const rows = RF().buildRows(cur, 2.2, splits);
+    const row = rows.find((r) => r.lines.some((l) => l.id === anchorId));
+    if (!row) return null;
+    const st = structureFor(rows, row, an, regionX, gut);
+    return { rows, row, st };
+  }
+  /** Column, rows, leading, bullet item and heading around a row. */
+  function structureFor(rows, row, an, regionX, gut) {
+    const view = an.page.view;
+    const sz = row.size;
+    const cx0 = Math.min(...rows.map((r) => r.x0)), cx1 = Math.max(...rows.map((r) => r.x1));
+    gut = gut || [];
+    // with no gutter on a side the column runs to the page edge (rules and boxes often reach past the text)
+    let x0 = Math.min(cx0 - 2, view[0] - 2), x1 = Math.max(cx1 + 2, view[2] + 2); const notes = []; let uncertain = false;
+    for (const gp of gut) {
+      if (gp.b <= row.x0 + 0.5) x0 = Math.max(x0, gp.mid);
+      else if (gp.a >= row.x1 - 0.5) x1 = Math.min(x1, gp.mid);
+      else continue;
+      if (gp.b - gp.a < 1.4 * sz) { uncertain = true; notes.push('The gap between the columns is narrow, so the column edge is a guess — drag it if it’s wrong.'); }
+    }
+    // text to the side with no clear gutter found: the column edge can't be trusted
+    if (!gut.length && rows.some((r) => r !== row && Math.abs(r.y - row.y) < 0.3 * sz && (r.x0 > row.x1 + 0.5 || r.x1 < row.x0 - 0.5))) { uncertain = true; notes.push('Pdfroo couldn’t find a clear column edge here — check the outlined area and drag its edges if needed.'); }
+    const g = { gaps: gut.map((q) => [q.a, q.b]) };
+    if (regionX) { x0 = regionX.x0; x1 = regionX.x1; uncertain = false; notes.length = 0; }
+    const inCol = (r) => r.x0 >= x0 - 1 && r.x1 <= x1 + 1;
+    const col = rows.filter(inCol).sort((p, q) => q.y - p.y);
+    const i = col.indexOf(row);
+    // leading: baseline steps between same-size neighbours
+    const steps = [];
+    for (let k = 1; k < col.length; k++) { const a = col[k - 1], b = col[k]; const d = a.y - b.y; if (Math.abs(a.size - b.size) < 0.1 * a.size && d > 0.6 * a.size && d < 1.7 * a.size) steps.push(d); }
+    const lead = median(steps.filter((d) => Math.abs(d - (median(steps) || d)) < 0.25 * sz)) || 1.2 * sz;
+    const isStart = (r) => !!(r.bulletRun || r.inlineBullet);
+    const gap = (a, b) => a.y - b.y;
+    // bullet item containing the row
+    let item = null;
+    if (i >= 0) {
+      let s = i;
+      while (s >= 0 && !isStart(col[s]) && s > 0 && gap(col[s - 1], col[s]) <= 1.3 * lead && Math.abs(col[s].size - sz) < 0.1 * sz) s--;
+      if (s >= 0 && isStart(col[s])) {
+        const tx = col[s].textX; let e = s;
+        while (e + 1 < col.length && !isStart(col[e + 1]) && gap(col[e], col[e + 1]) <= 1.3 * lead && Math.abs(col[e + 1].x0 - tx) < 2.5 && Math.abs(col[e + 1].size - col[s].size) < 0.1 * sz) e++;
+        if (i <= e) item = { start: s, end: e, rows: col.slice(s, e + 1) };
+      }
+    }
+    // heading: bold / caps / bigger than the body text, short, followed by body rows
+    const bodySize = median(col.map((r) => r.size)) || sz;
+    const headingLike = (r) => (r.bold || r.caps || r.size > 1.1 * bodySize) && !isStart(r) && (r.x1 - r.x0) < 0.85 * (x1 - x0);
+    let heading = null;
+    if (i >= 0 && headingLike(row) && (row.caps || row.size > 1.1 * bodySize || (row.bold && i + 1 < col.length && !col[i + 1].bold))) {
+      const same = (r) => Math.abs(r.size - row.size) < 0.6 && !!r.caps === !!row.caps && !!r.bold === !!row.bold && headingLike(r);
+      let e = i; while (e + 1 < col.length && !same(col[e + 1])) e++;
+      let p = i - 1; while (p >= 0 && !same(col[p])) p--;
+      heading = { index: i, end: e, next: e + 1 < col.length ? e + 1 : null, prev: p >= 0 ? p : null };
+    }
+    return { x0, x1, col, i, lead, item, heading, gutters: g.gaps, uncertain, notes, bodySize };
+  }
+
+  /**
+   * Plan "Add like this" without changing anything. mode: 'line' | 'bullet' | 'section'.
+   * opts: { body (section's first line), region: { x0, x1 } (user-dragged column bounds, PDF x), wrapOf: lineId (wrap an edited line) }
+   */
+  async function planInsert(state, pageIndex, anchorId, mode, text, opts) {
+    opts = opts || {};
+    const pg = state.pages[pageIndex];
+    const no = (message, extra) => Object.assign({ ok: false, message }, extra || {});
+    if (!pg || pg.src == null || !sources[pg.src] || !sources[pg.src].libDoc) return no('This page has no text to add to.');
+    if (totalRotation(pg)) return no('Rotate the page back to upright first — adding lines works on upright pages.');
+    const an = await analyzePage(pg.src, pg.index);
+    const geo = await pageGeometry(pg.src, pg.index);
+    const view = an.page.view;
+    const cur = currentLines(an, pg);
+    const la = layoutAround(an, cur, anchorId, opts.region, geo);
+    if (!la) return no('That line could not be found.');
+    const { rows, row, st } = la;
+    const { col, lead } = st;
+    const notes = st.notes.slice(), conflicts = [];
+    let uncertain = st.uncertain;
+    // what is inserted, where
+    let anchorRow = row, firstGap = lead, srcRow = row, x = row.x0, xCont = row.x0;
+    let headRow = null, bodyRow = null, prefix = '', cloneBullet = null;
+    const isStartRow = (r) => !!(r.bulletRun || r.inlineBullet);
+    if (mode === 'bullet') {
+      if (!st.item) return no('This line isn’t part of a bulleted list. Use “Add line below” instead.');
+      const it = st.item; anchorRow = it.rows[it.rows.length - 1]; srcRow = it.rows[0];
+      const nxt = col[it.end + 1];
+      if (nxt && (nxt.bulletRun || nxt.inlineBullet)) firstGap = anchorRow.y - nxt.y;
+      else {
+        // gap before this item, from the previous bullet item (if any)
+        const prev = col[it.start - 1];
+        firstGap = prev && it.start > 0 && (prev.y - srcRow.y) < 2.2 * lead ? prev.y - srcRow.y : lead;
+      }
+      x = srcRow.textX; xCont = it.rows[1] ? it.rows[1].x0 : srcRow.textX;
+      if (srcRow.bulletRun) cloneBullet = srcRow.bulletRun;
+      else { const m = String(srcRow.lines[0].text).match(/^(\S)(\s*)/); prefix = m ? m[1] + (m[2] || ' ') : ''; x = srcRow.x0; }
+    } else if (mode === 'section') {
+      if (!st.heading) return no('Select a section heading to add a section like it.');
+      const h = st.heading; headRow = col[h.index]; anchorRow = col[h.end];
+      bodyRow = h.index + 1 <= h.end ? col[h.index + 1] : null;
+      if (h.next != null) firstGap = anchorRow.y - col[h.next].y;
+      else if (h.prev != null) firstGap = col[h.index - 1].y - headRow.y;
+      else firstGap = 2.2 * lead;
+      srcRow = headRow; x = headRow.x0; xCont = headRow.x0;
+    } else if (mode === 'line' || mode === 'wrap') {
+      x = row.textX; xCont = row.textX;
+      if (st.item) { const it = st.item; xCont = it.rows[1] ? it.rows[1].x0 : col[it.start].textX; }
+      if (mode === 'wrap') { x = xCont; srcRow = row; }
+      else if (!st.item) {
+        // a paragraph that wraps (e.g. "Cloud & Tools: …" + its second line): the new line goes after its last line,
+        // and a paragraph gap (if the next paragraph has one) is kept
+        const i0 = col.indexOf(row);
+        let e = i0;
+        const labelStart = (r) => { const ls = r.lines.filter((l) => !l.bullet); return ls.length >= 2 && !!ls[0].bold && !ls[1].bold && /:\s*$/.test(String(ls[0].text)); };
+        const maxR = Math.max(...col.filter((r) => Math.abs(r.size - row.size) < 0.15 * row.size).map((r) => r.x1));
+        const contX = (q) => Math.abs(q.x0 - row.x0) < 1.5 || Math.abs(q.x0 - row.textX) < 1.5 || (labelStart(row) && q.x0 > row.x0 && q.x0 < row.lines[1].x + 1.5);
+        while (e + 1 < col.length) {
+          const q = col[e + 1], g = col[e].y - q.y;
+          if (isStartRow(q) || labelStart(q) || !!q.bold !== !!row.lines[row.lines.length - 1].bold || g > 1.25 * lead || g < 0.5 * lead || Math.abs(q.size - row.size) >= 0.1 * row.size || !contX(q) || col[e].x1 < maxR - 8 * row.size) break;
+          e++;
+        }
+        anchorRow = col[e]; if (e > i0) xCont = col[i0 + 1].x0;
+        const nx = col[e + 1];
+        if (nx && Math.abs(nx.size - row.size) < 0.1 * row.size && nx.x0 <= row.x0 + 1.5 && nx.x0 >= row.x0 - 1.5) { const g = anchorRow.y - nx.y; if (g > 1.08 * lead && g < 2.6 * lead) firstGap = g; }
+        if (labelStart(row)) xCont = e > i0 ? col[i0 + 1].x0 : row.x0;
+      }
+    } else return no('Unknown kind of line.');
+    const pickSrc = (r) => r.lines.filter((l) => !l.bullet && String(l.text).trim()).sort((p, q) => q.width - p.width)[0] || r.lines[0];
+    // column right edge for wrapping: the longest same-size rows in the column
+    const colRFor = (r) => {
+      const isHead = (q) => st.heading && (q.bold || q.caps) && q.size >= r.size && (q === headRow || (q.caps && !/[a-z]/.test(q.text)));
+      const body = col.filter((q) => !isHead(q));
+      const same = body.filter((q) => Math.abs(q.size - r.size) < 0.15 * r.size);
+      let v = Math.max(...((same.length >= 2 ? same : body.length ? body : col).map((q) => q.x1)));
+      v = Math.min(v, st.x1 - 1);
+      if (v - r.x0 < 4 * r.size) v = Math.min(st.x1 - 1, r.x0 + 30 * r.size);
+      return v;
+    };
+    let colR = colRFor(srcRow);
+    // build the new rows (text wrapped to the column)
+    const newRows = [];   // { lines: [{ text, x, src }], y }
+    const labelSplit = (r, t) => {
+      // "Label: text" rows (bold label + regular text) keep both fonts
+      const ls = r.lines.filter((l) => !l.bullet);
+      if (ls.length >= 2 && /:\s*$/.test(String(ls[0].text)) && !!ls[0].bold !== !!ls[1].bold) {
+        const m = t.match(/^([^:]{1,40}:)\s*(.*)$/);
+        if (m) return { label: m[1], rest: m[2], labelSrc: ls[0], restSrc: ls[1] };
+      }
+      return null;
+    };
+    const layoutPara = async (r, t, y0, xFirst, xNext, first) => {
+      const ls = mode === 'wrap' ? null : labelSplit(r, t);
+      const src = mode === 'wrap' && opts.srcLineId ? (((l) => (l && l.inserted ? an.lines.find((o) => o.id === l.edit.srcLineId) : l))(cur.find((l) => l.id === opts.srcLineId)) || pickSrc(r)) : pickSrc(r);
+      if (ls) {
+        const lw = (await fontPlanFor(an, ls.labelSrc, ls.label)) || { w: 0 };
+        const lsw = (await fontPlanFor(an, ls.labelSrc, String(ls.labelSrc.text).replace(/\s+$/, ''))) || { w: ls.labelSrc.width };
+        const gapLR = Math.max(0.22 * ls.restSrc.size, ls.restSrc.x - (ls.labelSrc.x + lsw.w));
+        const xr = xFirst + lw.w + gapLR;
+        const cr = mode === 'section' ? colRFor(r) : colR;
+        const parts = ls.rest ? await wrapText(an, ls.restSrc, ls.rest, [cr - xr, cr - xNext]) : [];
+        if (!parts) return null;
+        newRows.push({ y: y0, lines: [{ text: ls.label, x: xFirst, src: ls.labelSrc }].concat(parts.length ? [{ text: parts[0], x: xr, src: ls.restSrc }] : []) });
+        parts.slice(1).forEach((p, k) => newRows.push({ y: y0 - (k + 1) * lead, lines: [{ text: p, x: xNext, src: ls.restSrc }] }));
+        return parts.length || 1;
+      }
+      const full = (first ? prefix : '') + t;
+      const cr = mode === 'section' ? colRFor(r) : colR;
+      const parts = await wrapText(an, src, full, [cr - xFirst, cr - xNext]);
+      if (!parts) return null;
+      parts.forEach((p, k) => newRows.push({ y: y0 - k * lead, lines: [{ text: p, x: k ? xNext : xFirst, src }] }));
+      return parts.length;
+    };
+    const typed = String(text || '').replace(/[\r\n\t]+/g, ' ').trim();
+    if (!typed) return no('Type the text to add first.');
+    const y1 = anchorRow.y - firstGap;
+    let height = firstGap, n;
+    if (mode === 'section') {
+      n = await layoutPara(headRow, typed, y1, x, x, true);
+      if (n == null) return no('Some of these characters aren’t available in the matching fonts.');
+      height += (n - 1) * lead;
+      const body = String(opts.body || '').replace(/[\r\n\t]+/g, ' ').trim();
+      if (body && bodyRow) {
+        const hb = headRow.y - bodyRow.y;
+        const yb = y1 - (n - 1) * lead - hb;
+        const nb = await layoutPara(bodyRow, body, yb, bodyRow.textX, bodyRow.x0, true);
+        if (nb == null) return no('Some of these characters aren’t available in the matching fonts.');
+        height += hb + (nb - 1) * lead;
+        if (bodyRow.bulletRun) newRows[newRows.length - nb].clone = { src: bodyRow.bulletRun, x: bodyRow.bulletRun.x };
+      }
+    } else {
+      n = await layoutPara(srcRow, typed, y1, x, xCont, true);
+      if (n == null) return no('Some of these characters aren’t available in the matching fonts.');
+      height += (n - 1) * lead;
+      if (cloneBullet) newRows[0].clone = { src: cloneBullet, x: cloneBullet.x };
+    }
+    const dy = -Math.round(height * 1000) / 1000;
+    // the cut: halfway between the anchor and the next row in the column
+    const ai = col.indexOf(anchorRow), nextRow = col[ai + 1];
+    let yCut = nextRow ? anchorRow.y - Math.min(anchorRow.y - nextRow.y, 3 * lead) / 2 : anchorRow.y - 0.6 * lead;
+    // under body text the cut sits right below the line, so a divider between it and the next item moves with what's below;
+    // under a heading it stays halfway (the heading's own underline stays with the heading)
+    const headingAnchor = anchorRow.bold || anchorRow.caps || anchorRow.size > 1.1 * st.bodySize;
+    if (!headingAnchor && mode !== 'section') yCut = Math.max(yCut, anchorRow.bottom - 0.3);
+    const rects = [{ x0: st.x0, x1: st.x1, yTop: yCut, yBot: view[1] - 2 }];
+    // spanners: rows / paths below the cut that cross the column edges -> everything below them moves too
+    const crosses = (bb) => (bb[0] < st.x0 - 1 && bb[2] > st.x0 + 1) || (bb[0] < st.x1 - 1 && bb[2] > st.x1 + 1);
+    const W = view[2] - view[0], H = view[3] - view[1];
+    const geoItems = geo.scan.items.map((it, k) => { const d = RF().shiftFor(it.bbox, pg.shifts); return { k, it, bb: [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d] }; });
+    const isBackground = (bb) => (bb[2] - bb[0]) > 0.5 * W && (bb[3] - bb[1]) > 0.4 * H || bb[0] <= st.x0 + 2 && bb[2] >= st.x1 - 2 && (bb[3] - bb[1]) > 0.4 * H;
+    let spanTop = null;
+    for (const r of rows) if (r.y < yCut && crosses([r.x0, 0, r.x1, 0])) spanTop = Math.max(spanTop == null ? -Infinity : spanTop, r.top + 0.5);
+    for (const g of geoItems) {
+      if (g.it.kind === 'shading' || (g.it.kind === 'path' && !g.it.painted) || isBackground(g.bb)) continue;
+      if (g.bb[3] < yCut && crosses(g.bb) && g.bb[2] - g.bb[0] < 0.98 * W) spanTop = Math.max(spanTop == null ? -Infinity : spanTop, g.bb[3] + 0.5);
+    }
+    if (spanTop != null && st.x0 > view[0] + 4 || spanTop != null && st.x1 < view[2] - 4) {
+      rects.push({ x0: view[0] - 2, x1: view[2] + 2, yTop: spanTop, yBot: view[1] - 2 });
+      uncertain = true; notes.push('Something below crosses the column edge, so everything under it moves down too.');
+    }
+    // a big empty gap (e.g. above a footer) absorbs the shift: what's below it stays put
+    if (spanTop == null) {
+      const below = col.slice(ai + 1);
+      let maxGap = 2 * lead;
+      for (let k = 1; k < below.length; k++) {
+        const g = below[k - 1].bottom - below[k].top;
+        if (g - height >= Math.max(24, 2 * maxGap)) {
+          rects[0].yBot = below[k].top + 1;
+          uncertain = true; notes.push('There’s a large gap lower down; the content under it stays where it is.');
+          break;
+        }
+        maxGap = Math.max(maxGap, below[k - 1].y - below[k].y);
+      }
+    }
+    const inR = (bb) => RF().inRegion(bb, rects, 1);
+    // what moves
+    const moveLines = cur.filter((l) => !row.lines.includes(l) && l.y < yCut && inR(probeBox(l)));
+    const moveGeo = geoItems.filter((g) => g.it.kind !== 'shading' && inR(g.bb));
+    const moveAnn = geo.annots.map((a) => { const d = RF().shiftFor(a.bbox, pg.shifts); return Object.assign({}, a, { bb: [a.bbox[0], a.bbox[1] + d, a.bbox[2], a.bbox[3] + d] }); }).filter((a) => inR(a.bb));
+    const moveApp = (pg.annots || []).filter((a) => inR(appAnnotBox(a, view)));
+    // safety: boxes / rules cut by the insertion point, locked text, clipping
+    for (const g of geoItems) {
+      // clip-only paths are not boxes: whether moved content would leave its clip is checked separately
+      if (g.it.kind === 'shading' || (g.it.kind === 'path' && !g.it.painted) || isBackground(g.bb)) continue;
+      const ov = Math.min(g.bb[2], st.x1) - Math.max(g.bb[0], st.x0);
+      if (ov > 2 && g.bb[3] > yCut + 0.3 * lead && g.bb[1] < yCut - 0.3 * lead && g.bb[1] > view[1] + 2) conflicts.push({ kind: 'cut', bbox: g.bb, message: 'A box or table crosses the place where the new line goes, so it can’t be moved safely.' });
+    }
+    for (const l of moveLines) {
+      if (l.inserted) continue;
+      if (!l.movable && !l.editable && String(l.text).trim()) conflicts.push({ kind: 'locked', bbox: lineBox(l), message: 'Some text below can’t be moved (it sits inside a reusable block).' });
+    }
+    const movedGeoKeys = new Set(moveGeo.map((g) => g.k));
+    for (const g of moveGeo) {
+      const c = g.it.clipAt; if (!c) continue;
+      const clipItem = geoItems.find((h) => h.it.clip && h.it.i1 < g.it.i0 && Math.abs(h.it.bbox[0] - c[0]) < 0.5 && Math.abs(h.it.bbox[3] - c[3]) < 0.5);
+      if (clipItem && movedGeoKeys.has(clipItem.k)) continue;
+      if (g.bb[1] + dy < c[1] - 1) conflicts.push({ kind: 'clip', bbox: g.bb, message: 'Part of the page below is clipped; moving it would hide it.' });
+    }
+    // text runs: those in the region move in the content stream; a run that is only partly in it (e.g. a LaTeX line whose
+    // left text and right-aligned date are one TJ across the column edge) can't, nor can one that would leave its clip
+    {
+      const editedBoxes = cur.filter((l) => l.edit && l.orig && !l.inserted).map((l) => probeBox(l.orig));
+      const owned = (bb) => editedBoxes.some((e) => bb[0] >= e[0] - 1 && bb[2] <= e[2] + 1 && Math.abs(bb[1] - e[1]) < 1);
+      const clipMoves = (c) => geoItems.some((h) => h.it.clip && movedGeoKeys.has(h.k) && Math.abs(h.it.bbox[0] - c[0]) < 0.5 && Math.abs(h.it.bbox[1] - c[1]) < 0.5 && Math.abs(h.it.bbox[3] - c[3]) < 0.5);
+      let shared = null, stuck = null, clipped = null;
+      for (const t of geo.texts || []) {
+        if (t.rot || owned(t.box)) continue;
+        const d0 = RF().shiftFor(t.box, pg.shifts), bb = [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0];
+        const cy = (bb[1] + bb[3]) / 2;
+        if (inR(bb)) {
+          if (!t.movable) stuck = stuck || bb;
+          const c = geo.scan.textClip[t.i];
+          if (c && bb[1] + dy < c[1] - 1 && c[3] - c[1] < 0.95 * H && !clipMoves(c)) clipped = clipped || bb;
+        } else if (rects.some((r) => cy <= r.yTop && cy >= r.yBot && bb[2] > r.x0 + 1 && bb[0] < r.x1 - 1 && ((bb[0] < r.x0 - 1) || (bb[2] > r.x1 + 1)))) shared = shared || bb;
+      }
+      if (shared) conflicts.push({ kind: 'shared', bbox: shared, message: 'A line below runs across the column edge (its text is one piece), so it can’t be moved safely. Drag the column edges to include all of it, or add this lower down.' });
+      if (stuck) conflicts.push({ kind: 'locked', bbox: stuck, message: 'Some text below can’t be moved cleanly, so nothing would be changed.' });
+      if (clipped) conflicts.push({ kind: 'clip', bbox: clipped, message: 'Some text below sits in a clipped area; moving it would hide it.' });
+    }
+    // room on the page
+    const topMargin = view[3] - Math.max(...rows.map((r) => r.top));
+    const lowest = Math.min(...rows.map((r) => r.bottom), ...geoItems.filter((g) => g.it.painted !== false && g.it.kind !== 'shading' && !isBackground(g.bb)).map((g) => g.bb[1]));
+    const bottomLimit = Math.min(view[1] + Math.max(18, Math.min(72, topMargin)), lowest);
+    const newBottom = Math.min(...newRows.map((r) => r.y - 0.25 * srcRow.size), ...moveLines.map((l) => lineBox(l)[1] + dy), ...moveGeo.map((g) => g.bb[1] + dy));
+    const overflow = newBottom < bottomLimit - 0.5 ? Math.round((bottomLimit - newBottom) * 10) / 10 : 0;
+    // preview geometry (display points)
+    const disp = (bb) => ({ x: bb[0] - view[0], y: view[3] - bb[3], w: bb[2] - bb[0], h: bb[3] - bb[1] });
+    const newLines = [];
+    for (const r of newRows) {
+      if (r.clone) newLines.push({ clone: true, srcId: r.clone.src.id, x: r.clone.x, y: r.y, size: r.clone.src.size, w: r.clone.src.width, text: r.clone.src.text });
+      for (const l of r.lines) {
+        const fp = await fontPlanFor(an, l.src, l.text);
+        newLines.push({ text: l.text, x: l.x, y: r.y, size: l.src.size, srcId: l.src.id, w: fp ? fp.w : 0, label: fp ? fp.label : '', color: l.src.color, bold: !!l.src.bold, italic: !!l.src.italic });
+      }
+    }
+    // the landing spot must be clear: no border, rule or box edge that stays put (e.g. the bottom of a table cell)
+    {
+      const land = newLines.map((l) => [l.x, l.y - 0.25 * l.size, l.x + Math.max(l.w, 0.3 * l.size), l.y + 0.8 * l.size]);
+      for (const g of geoItems) {
+        if (movedGeoKeys.has(g.k) || g.it.kind === 'shading' || (g.it.kind === 'path' && !g.it.painted) || isBackground(g.bb)) continue;
+        for (const b of land) {
+          const ox = Math.min(b[2], g.bb[2]) - Math.max(b[0], g.bb[0]), oy = Math.min(b[3], g.bb[3]) - Math.max(b[1], g.bb[1]);
+          if (ox <= 0.5 || oy <= -0.2) continue;
+          const contains = g.bb[0] <= b[0] + 0.5 && g.bb[2] >= b[2] - 0.5 && g.bb[1] <= b[1] + 0.5 && g.bb[3] >= b[3] - 0.5;
+          if (contains && !g.it.stroke) continue;          // a fill behind the text (cell / sidebar background)
+          if (contains && g.it.stroke && (g.bb[3] - g.bb[1]) > 3 && b[1] - g.bb[1] > 1 && g.bb[3] - b[3] > 1) continue;   // inside a stroked box with room
+          conflicts.push({ kind: 'landing', bbox: g.bb, message: 'The new line would run into a border or box below it (e.g. the bottom of a table cell). Growing tables and boxes isn’t supported yet.' });
+          break;
+        }
+      }
+    }
+    // the heading's own divider comes along with a new section
+    const pathClones = [];
+    if (mode === 'section' && headRow) {
+      const lim = bodyRow ? bodyRow.top : headRow.y - 1.6 * headRow.size;
+      for (const g of geoItems) if (g.it.kind === 'path' && g.it.painted && !g.it.clip && g.bb[3] < headRow.y && g.bb[1] > lim - 0.5 && g.bb[0] >= st.x0 - 1 && g.bb[2] <= st.x1 + 1) if (!pathClones.some((q) => q.bb.every((v, k) => Math.abs(v - g.bb[k]) < 0.3))) pathClones.push({ bb: g.bb, k: g.k, dy: y1 - headRow.y, bbox: [g.bb[0], g.bb[1] + y1 - headRow.y, g.bb[2], g.bb[3] + y1 - headRow.y] });
+    }
+    const counts = { lines: moveLines.filter((l) => !l.bullet).length, bullets: moveLines.filter((l) => l.bullet).length, paths: moveGeo.filter((g) => g.it.kind === 'path' && g.it.painted).length, images: moveGeo.filter((g) => g.it.kind !== 'path').length, links: moveAnn.length, annots: moveApp.length };
+    { const seen = new Set(); for (let k = conflicts.length - 1; k >= 0; k--) { const key = conflicts[k].kind + conflicts[k].bbox.map((v) => v.toFixed(1)).join(','); if (seen.has(key)) conflicts.splice(k, 1); else seen.add(key); } }
+    const uniq = (boxes) => { const seen = new Set(); return boxes.filter((b) => { const key = [b.x, b.y, b.w, b.h].map((v) => v.toFixed(1)).join(','); if (seen.has(key)) return false; seen.add(key); return true; }); };
+    const ok = !conflicts.length && !overflow;
+    return {
+      ok, mode, pageIndex, anchorId, text: typed, body: opts.body || '', region: { x0: st.x0, x1: st.x1, yCut, rects, dyn: !!opts.region }, dy,
+      lead, colRight: colR, uncertain, notes, conflicts: conflicts.slice(0, 6), overflow, bottomLimit,
+      newLines, pathClones, counts, moving: { lines: moveLines.map((l) => l.id), geo: moveGeo.map((g) => g.k), annots: moveAnn.map((a) => a.i), app: moveApp.map((a) => a.id) },
+      preview: {
+        moved: uniq(moveLines.map((l) => disp(lineBox(l))).concat(moveGeo.map((g) => disp(g.bb)), moveAnn.map((a) => disp(a.bb)), moveApp.map((a) => disp(appAnnotBox(a, view))))),
+        ddy: -dy, region: { x0: st.x0 - view[0], x1: st.x1 - view[0], yTop: view[3] - yCut, yBot: view[3] - rects[0].yBot, extra: rects.slice(1).map((r) => ({ x0: r.x0 - view[0], x1: r.x1 - view[0], yTop: view[3] - r.yTop })) },
+        added: newLines.map((l) => disp([l.x, l.y - 0.22 * l.size, l.x + Math.max(l.w, l.size * 0.4), l.y + 0.78 * l.size])).concat(pathClones.map((p) => disp(p.bbox))),
+        conflicts: conflicts.map((c) => disp(c.bbox)), gutters: st.gutters.map((g) => [g[0] - view[0], g[1] - view[0]]), page: { w: W, h: H },
+      },
+      message: conflicts.length ? conflicts[0].message : overflow ? `There isn’t room for this on the page — it would push content ${Math.ceil(overflow)} pt past the bottom margin.` : '',
+    };
+  }
+
+  /** Apply a plan (re-planned from its inputs so it matches the page right now). One call = one undo step for the app. */
+  async function applyInsert(state, pageIndex, planIn) {
+    const plan = await planInsert(state, pageIndex, planIn.anchorId, planIn.mode, planIn.text, { body: planIn.body, region: planIn.region && planIn.region.dyn ? { x0: planIn.region.x0, x1: planIn.region.x1 } : null });
+    if (!plan.ok) return { ok: false, message: plan.message || 'This can’t be added safely.' };
+    const pg = state.pages[pageIndex];
+    const before = JSON.stringify({ textEdits: pg.textEdits || [], shifts: pg.shifts || [], annots: pg.annots || [] });
+    const revert = () => { const b = JSON.parse(before); pg.textEdits = b.textEdits; pg.shifts = b.shifts; pg.annots = b.annots; };
+    const an = await analyzePage(pg.src, pg.index);
+    const geo = await pageGeometry(pg.src, pg.index);
+    const view = an.page.view;
+    const dy = plan.dy;
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    pg.textEdits = (pg.textEdits || []).slice();
+    // 1. text below: untouched runs move with the page shift (content stream); edited / added lines move their edit
+    for (const id of plan.moving.lines) {
+      const e = pg.textEdits.find((x) => x.lineId === id);
+      if (e) { const ne = Object.assign({}, e, { move: { dx: (e.move ? e.move.dx : 0), dy: r3((e.move ? e.move.dy : 0) + dy) } }); pg.textEdits[pg.textEdits.indexOf(e)] = ne; }
+    }
+    // 2. vector paths, images, links: recorded as a page shift, applied to the content stream at render / export
+    pg.shifts = (pg.shifts || []).concat([{ rects: plan.region.rects, dy: r3(dy), tol: 1 }]);
+    // 3. annotations added in Pdfroo
+    const ids = new Set(plan.moving.app);
+    pg.annots = (pg.annots || []).map((a) => { if (!ids.has(a.id)) return a; const c = JSON.parse(JSON.stringify(a)); moveAppAnnot(c, -dy); return c; });
+    // 4. the new lines
+    const groupId = uid('ins');
+    for (const nl of plan.newLines) {
+      const src = an.lines.find((l) => l.id === nl.srcId) || currentLines(an, pg).find((l) => l.id === nl.srcId);
+      if (!src) continue;
+      const base = { id: uid('te'), lineId: uid('ins'), insert: true, group: groupId, srcLineId: src.id, original: '', verified: true, reading: null, removal: 'none', bg: src.bg || '#ffffff', color: src.color || '#000000',
+        geo: { x: r3(nl.x), y: r3(nl.y), size: src.size, hs: src.hs, width: 0, asc: src.asc, desc: src.desc, fb: src.fakeBold || 0 }, match: null };
+      if (nl.clone) {
+        const sh = lineShows(an.shows.filter((x) => !x.form), src)[0];
+        if (!sh || !sh.codes.length) continue;
+        const lf = an.libFonts[sh.font];
+        const hex = sh.codes.map((c) => c.toString(16).toUpperCase().padStart(lf && lf.composite ? 4 : 2, '0')).join('');
+        const m = TI().fmt;
+        const M = [sh.m[0] / (sh.Tfs * sh.Th), sh.m[1] / (sh.Tfs * sh.Th), sh.m[2] / sh.Tfs, sh.m[3] / sh.Tfs, sh.m[4], sh.m[5]];
+        pg.textEdits.push(Object.assign(base, { kind: 'clone', text: '', tier: 1, label: 'Bullet copied', newW: src.width,
+          clone: { key: sh.font, hex, Tfs: sh.Tfs, Th: sh.Th, tm: [M[0], M[1], M[2], M[3], r3(M[4] + nl.x - src.x), r3(M[5] + nl.y - src.y)].map((v) => +m(v)), color: sh.fill || src.color || '#000000' } }));
+        continue;
+      }
+      const fp = await fontPlanFor(an, src, nl.text);
+      if (!fp) { revert(); return { ok: false, message: 'Some of these characters aren’t available in the matching fonts.' }; }
+      pg.textEdits.push(Object.assign(base, { kind: 'text', text: nl.text, tier: fp.tier, label: fp.label, t1: fp.t1, sub: fp.sub, newW: r3(fp.w) }));
+    }
+    for (const pc of plan.pathClones) {
+      const txt = RF().clonePath(geo.scan.items[pc.k], 0, pc.dy);
+      if (txt) pg.textEdits.push({ id: uid('te'), lineId: uid('ins'), insert: true, group: groupId, kind: 'path', path: txt, bbox: pc.bbox, text: '', original: '', removal: 'none', tier: 0, label: '', geo: { x: pc.bbox[0], y: pc.bbox[1], size: 1 }, match: null, verified: true });
+    }
+    // verify once: every new line is there and moved lines are found at their new place
+    try {
+      const proxy = await getEditedProxy(pg);
+      const page = await proxy.getPage(1);
+      const tc = await page.getTextContent();
+      const all = tc.items.map((i) => i.str || '').join('').replace(/\s+/g, '').normalize('NFC');
+      const missing = plan.newLines.filter((l) => !l.clone && l.text.trim() && !all.includes(l.text.replace(/\s+/g, '').normalize('NFC')));
+      if (missing.length) { revert(); return { ok: false, message: 'Pdfroo couldn’t add this cleanly, so nothing was changed.' }; }
+      for (const id of plan.moving.lines.slice(0, 40)) {
+        const l = currentLines(an, pg).find((x) => x.id === id);
+        if (!l || !String(l.text).trim() || l.inserted) continue;
+        const want = String(l.text).replace(/\s+/g, '').normalize('NFKC').slice(0, 12);
+        const hit = tc.items.some((i) => String(i.str || '').replace(/\s+/g, '').normalize('NFKC').includes(want.slice(0, Math.min(want.length, String(i.str || '').replace(/\s+/g, '').length))) && Math.abs(i.transform[5] - l.y) < 0.4 * l.size && i.transform[4] > l.x - 0.6 * l.size && i.transform[4] < l.x + Math.max(l.width, l.size));
+        if (!hit) { revert(); return { ok: false, message: 'Pdfroo couldn’t move the text below cleanly, so nothing was changed.' }; }
+      }
+    } catch (err) { console.warn(err); revert(); return { ok: false, message: 'Pdfroo couldn’t add this cleanly, so nothing was changed.' }; }
+    const c = plan.counts, parts = [];
+    if (c.lines) parts.push(`${c.lines} line${c.lines === 1 ? '' : 's'}`);
+    if (c.paths) parts.push(`${c.paths} divider${c.paths === 1 ? '' : 's'}`);
+    if (c.images) parts.push(`${c.images} image${c.images === 1 ? '' : 's'}`);
+    if (c.links) parts.push(`${c.links} link${c.links === 1 ? '' : 's'}`);
+    const lbl = (plan.newLines.find((l) => !l.clone) || {}).label || '';
+    const nRows = new Set(plan.newLines.filter((l) => !l.clone).map((l) => l.y.toFixed(1))).size;
+    return { ok: true, message: `Added ${nRows} line${nRows === 1 ? '' : 's'} · ${lbl}` + (parts.length ? ` · moved ${parts.join(', ')} down ${Math.abs(dy).toFixed(1)} pt` : ''), plan };
+  }
+
+  /** An edited line that now runs past its column: plan to keep what fits and wrap the rest onto new lines below. */
+  async function planWrapEdit(state, pageIndex, lineId, opts) {
+    const pg = state.pages[pageIndex];
+    if (!pg || pg.src == null || totalRotation(pg)) return { ok: false, message: '' };
+    const e = (pg.textEdits || []).find((x) => x.lineId === lineId && !x.moveOnly && (!x.insert || x.kind === 'text'));
+    if (!e || e.sub && e.sub.indic) return { ok: false, message: '' };
+    const an = await analyzePage(pg.src, pg.index);
+    const ln = e.insert ? an.lines.find((l) => l.id === e.srcLineId) : an.lines.find((l) => l.id === lineId); if (!ln) return { ok: false, message: '' };
+    const lnX = e.insert ? e.geo.x : ln.x;
+    // column found with the line at its old length (the long edit itself would bridge the gutter)
+    const cur0 = currentLines(an, pg).map((l) => (l.id === lineId ? Object.assign({}, l, { width: l.orig ? Math.min(l.width, l.orig.width) : Math.min(l.width, l.size) }) : l));
+    const la = layoutAround(an, cur0, lineId, opts && opts.region, await pageGeometry(pg.src, pg.index));
+    if (!la) return { ok: false, message: '' };
+    const { row, st } = la;
+    const sameSize = st.col.filter((r) => Math.abs(r.size - row.size) < 0.15 * row.size && r !== row);
+    let colR = sameSize.length ? Math.max(...sameSize.map((r) => r.x1)) : st.x1 - 1;
+    colR = Math.min(colR, st.x1 - 1);
+    const x = lnX + (e.move ? e.move.dx : 0);
+    const right = x + (e.newW || 0) * (1 / (e.fit || 1));
+    if (right <= colR + 1.5 || (e.align && e.align !== 'left' && e.align !== 'justify')) return { ok: false, message: '', fits: true };
+    const parts = await wrapText(an, ln, e.text, [colR - x]);
+    if (!parts || parts.length < 2) return { ok: false, message: '' };
+    const keep = parts[0], rest = e.text.slice(keep.length).trim();
+    return { ok: true, lineId, keep, rest, colRight: colR, over: right - colR };
+  }
+
+  /** How far (pt) a line now runs past the right edge of its column, or 0. */
+  async function columnOverflow(state, pageIndex, lineId) {
+    try { const w = await planWrapEdit(state, pageIndex, lineId); return w && w.ok ? Math.max(0.01, w.over || 0.01) : 0; } catch (e) { return 0; }
+  }
+  /** Edited line past its column: keep what fits, wrap the rest onto new line(s) below, moving the content under it. */
+  async function applyWrapEdit(state, pageIndex, lineId, opts) {
+    const w = await planWrapEdit(state, pageIndex, lineId, opts);
+    if (!w.ok) return { ok: false, message: w.fits ? 'The line already fits its column.' : 'This line can’t be wrapped.' };
+    const pg = state.pages[pageIndex];
+    const before = JSON.stringify({ textEdits: pg.textEdits || [], shifts: pg.shifts || [], annots: pg.annots || [] });
+    const revert = () => { const b = JSON.parse(before); pg.textEdits = b.textEdits; pg.shifts = b.shifts; pg.annots = b.annots; };
+    const e0 = pg.textEdits.find((x) => x.lineId === lineId);
+    const r1 = await editTextLine(state, pageIndex, lineId, w.keep, { verified: true, style: e0 && e0.style ? Object.assign({}, e0.style) : undefined });
+    if (!r1.ok) { revert(); return r1; }
+    const plan = await planInsert(state, pageIndex, lineId, 'wrap', w.rest, { srcLineId: lineId, region: opts && opts.region });
+    if (!plan.ok) { revert(); return { ok: false, message: plan.message, plan }; }
+    const r2 = await applyInsert(state, pageIndex, plan);
+    if (!r2.ok) { revert(); return r2; }
+    return { ok: true, message: 'Wrapped onto the next line · ' + r2.message.replace(/^Added [^·]*· /, ''), plan: r2.plan };
+  }
+  /** Preview for wrapping an edited line (nothing changes): the plan of the insert after the line is cut down to what fits. */
+  async function previewWrapEdit(state, pageIndex, lineId, opts) {
+    const w = await planWrapEdit(state, pageIndex, lineId, opts);
+    if (!w.ok) return Object.assign({ ok: false }, w);
+    const pg = state.pages[pageIndex];
+    const saved = JSON.stringify(pg.textEdits || []);
+    try {
+      const e0 = pg.textEdits.find((x) => x.lineId === lineId);
+      const r1 = await editTextLine(state, pageIndex, lineId, w.keep, { verified: true, style: e0 && e0.style ? Object.assign({}, e0.style) : undefined });
+      if (!r1.ok) return { ok: false, message: r1.message };
+      const plan = await planInsert(state, pageIndex, lineId, 'wrap', w.rest, { srcLineId: lineId, region: opts && opts.region });
+      plan.wrap = w;
+      return plan;
+    } finally { pg.textEdits = JSON.parse(saved); }
+  }
+
   root.PdfEngine = {
     // lifecycle / loading
     load, getPageCount, getSourceBytes, getSignatureInfo, hasSource, closeAll, createState, newPage, uid,
@@ -2444,7 +3135,8 @@
     rotatePage, deletePage, duplicatePage, reorderPages, addBlankPage, merge,
     // export
     // existing-text editing (tiers 1–3; see README)
-    getTextLines, editTextLine, moveTextLine, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
+    _droppedReps: () => lastDroppedReps.slice(),
+    getTextLines, editTextLine, moveTextLine, getAddOptions, planInsert, applyInsert, planWrapEdit, previewWrapEdit, applyWrapEdit, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
     _fontReading: async (src, index, lineId, dbg) => { const an = await analyzePage(src, index); const ln = an.lines.find((l) => l.id === lineId); fontDbg = dbg || null; try { return ln && await fontReadingFor(an, ln, null); } finally { fontDbg = null; } },
     exportWithAnnotations, getLastExportFonts: () => Object.assign({}, lastExportFonts), isComplexScript: (t) => COMPLEX_SCRIPT_RE.test(String(t).replace(INDIC_STRIP_RE, '')), hasIndic, ensureScriptFonts, indicMalformed,
     // geometry shared with the UI

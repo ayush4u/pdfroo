@@ -475,6 +475,7 @@
     <ul class="help-notes">
       <li><strong>Signed PDFs:</strong> any change invalidates a digital signature. Pdfroo shows a banner and asks before your first edit. Downloading without changes keeps the original signed file.</li>
       <li><strong>Edit text</strong> changes one line at a time in the original font when possible. Hindi and other Indian scripts (Unicode) can be edited and typed as real, searchable text. Scanned pages, invisible OCR layers, outlined or rotated text, Arabic/Hebrew/Thai lines can't be edited; use White-out + Text instead. Hindi lines whose copied text doesn't match the print, and old Kruti Dev/Chanakya lines, are checked first: Pdfroo reads the printed line (it downloads a small text reader once) and asks you to confirm its reading when it isn't sure.</li>
+      <li><strong>Add like this</strong> (in Edit text, select a line): add a line, a bullet or a whole section in the same font, size, colour and indent. Pdfroo shows a preview first: what moves down is outlined, its new place is dashed, and if it isn't sure where a column ends the edges turn orange so you can drag them. Only the content below in that column moves; nothing changes until you press Add, and one Undo takes it all back. If there's no room left on the page, or a table or box is in the way, it tells you instead of moving anything.</li>
     </ul>
     <p class="help-credit" data-credit>Made by Ayush Tomar</p>
   </form>
@@ -533,6 +534,7 @@
 <script src="vendor/Sortable.min.js"></script>
 <script src="js/sample.js"></script>
 <script src="js/engine/textEdit.js"></script>
+<script src="js/engine/reflow.js"></script>
 <script src="js/engine/pdfEngine.js"></script>
 <script src="js/engine/compress.js"></script>
 <script src="js/config.js"></script>

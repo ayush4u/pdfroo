@@ -248,8 +248,8 @@
     doc.pages = o.pages; ui.current = clamp(o.current, 0, doc.pages.length - 1); ui.selectedId = null; ui.lastEdit = null;
     renderAll();
   }
-  function undo() { cancelLineEdit(); commitText(); if (!ui.history.length) return; ui.future.push(snapshot()); restore(ui.history.pop()); ui.dirty = true; updateChrome(); }
-  function redo() { cancelLineEdit(); commitText(); if (!ui.future.length) return; ui.history.push(snapshot()); restore(ui.future.pop()); ui.dirty = true; updateChrome(); }
+  function undo() { cancelAdd(true); cancelLineEdit(); commitText(); if (!ui.history.length) return; ui.future.push(snapshot()); restore(ui.history.pop()); ui.dirty = true; updateChrome(); }
+  function redo() { cancelAdd(true); cancelLineEdit(); commitText(); if (!ui.future.length) return; ui.history.push(snapshot()); restore(ui.future.pop()); ui.dirty = true; updateChrome(); }
   $('#undoBtn').addEventListener('click', undo);
   $('#redoBtn').addEventListener('click', redo);
 
@@ -292,7 +292,7 @@
     if (ui.fit) ui.zoom = fitZoom(ds);
     pageWrap.style.width = Math.round(ds.w * ui.zoom) + 'px';
     pageWrap.style.height = Math.round(ds.h * ui.zoom) + 'px';
-    positionTextEditor(); positionLineEditor();
+    positionTextEditor(); positionLineEditor(); positionAddPanel();
     $('#zoomVal').textContent = Math.round(ui.zoom * 100) + '%';
   }
 
@@ -319,7 +319,7 @@
     if (!doc) return;
     i = clamp(i, 0, doc.pages.length - 1);
     if (i === ui.current) return;
-    commitText();
+    commitText(); cancelAdd(true);
     ui.current = i; ui.selectedId = null;
     const pageBlank = pageWrap.querySelector('canvas');
     if (pageBlank) { const ctx = pageBlank.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pageBlank.width, pageBlank.height); }
@@ -476,6 +476,7 @@
       overlay.appendChild(annotNode(a, ui.tool !== 'edittext'));
     }
     if (ui.tool === 'edittext') drawTextLines(pg);
+    if (ui.addFlow) drawAddPreview(pg);
     if (ui.drag && ui.drag.temp) {
       const n = annotNode(ui.drag.temp, false);
       overlay.appendChild(n);
@@ -648,7 +649,7 @@
 
   /* ---------------- Tools ---------------- */
   function setTool(t) {
-    commitText();
+    commitText(); cancelAdd(true);
     ui.tool = t;
     editor.dataset.tool = t;
     if (t !== 'select') ui.selectedId = null;
@@ -704,6 +705,7 @@
     if (!doc || ui.pinch) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (ui.drag) return;                       // ignore extra fingers
+    if (ui.addFlow) { const ed = e.target.closest('[data-rfedge]'); if (ed) startEdgeDrag(e, ed.dataset.rfedge); return; }
     if (ui.editing) { commitText(); e.preventDefault(); return; }
     if (ui.lineEdit) { commitLineEdit(); e.preventDefault(); return; }
     const pt = toPage(e);
@@ -985,7 +987,7 @@
   }
 
   /* ---------------- Editing existing PDF text ---------------- */
-  const linesKey = (pg) => pg.id + '|' + E.totalRotation(pg) + '|' + (pg.textEdits || []).map((e) => e.lineId + '=' + e.text + '/' + e.tier + (e.move ? '@' + e.move.dx + ',' + e.move.dy : '')).join('|');
+  const linesKey = (pg) => pg.id + '|' + E.totalRotation(pg) + '|' + (pg.shifts ? pg.shifts.length : 0) + '|' + (pg.textEdits || []).map((e) => e.lineId + '=' + e.text + '/' + e.tier + (e.move ? '@' + e.move.dx + ',' + e.move.dy : '')).join('|');
   async function loadTextLines(force) {
     const pg = curPage();
     if (!pg || ui.tool !== 'edittext') return;
@@ -1347,8 +1349,222 @@
       const i = doc.pages.indexOf(pg);
       if (i === ui.current) renderPage();
       refreshThumb(i);
+      if (res.edit) offerWrap(pg, le.ln.id);
     } else toast(res.message, 'error');
     buildPropbar(); updateChrome();
+  }
+  /* ---------------- "Add like this": new line / bullet / section, with the content below moved down ---------------- */
+  // ui.addFlow = { mode, pageId, anchorId, region, plan, panel, inputs, snapBefore, wrap, mergeSnap }
+  const ADD_LABELS = { line: 'Line below', bullet: 'Bullet below', section: 'Section like this', wrap: 'Wrap onto the next line' };
+  function addOptionsFor(pg, lineId) {
+    const c = ui.addOpts;
+    if (c && c.pageId === pg.id && c.lineId === lineId && c.key === linesKey(pg)) return c.opts;
+    if (c && c.pending === lineId + '|' + linesKey(pg)) return null;
+    ui.addOpts = { pageId: pg.id, lineId, key: linesKey(pg), opts: null, pending: lineId + '|' + linesKey(pg) };
+    E.getAddOptions(pg, lineId).then((o) => {
+      if (!ui.addOpts || ui.addOpts.lineId !== lineId) return;
+      ui.addOpts.opts = o; ui.addOpts.pending = null; buildPropbar();
+    }).catch((err) => { console.warn(err); });
+    return null;
+  }
+  function addTools(inner, sep, lineId) {
+    const pg = curPage(); if (!pg || ui.addFlow) return;
+    const o = addOptionsFor(pg, lineId);
+    if (!o || !(o.line || o.bullet || o.section)) return;
+    inner.appendChild(sep());
+    const g = document.createElement('div'); g.className = 'add-like'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Add like this');
+    const lab = document.createElement('span'); lab.className = 'prop-label'; lab.textContent = 'Add'; g.appendChild(lab);
+    [['line', 'Line below'], ['bullet', 'Bullet below'], ['section', 'Section like this']].forEach(([m, t]) => {
+      if (!o[m]) return;
+      const b = propBtn('i-plus', t, async () => {
+        if (ui.lineEdit) { await commitLineEdit(); }
+        startAdd(m, lineId);
+      });
+      b.classList.add('add-' + m); b.title = t + ' — same font, size, colour and indent; what’s below moves down';
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      g.appendChild(b);
+    });
+    inner.appendChild(g);
+  }
+  function startAdd(mode, anchorId, extra) {
+    const pg = curPage(); if (!pg) return;
+    cancelAdd(true);
+    if (ui.lineEdit) closeLineEditor();
+    ui.runSel = null;
+    const f = ui.addFlow = Object.assign({ mode, pageId: pg.id, anchorId, region: null, plan: null, token: 0 }, extra || {});
+    const panel = document.createElement('div'); panel.className = 'add-panel' + (isPhone() ? ' sheet' : ''); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', ADD_LABELS[mode]);
+    const head = document.createElement('div'); head.className = 'add-head';
+    const ttl = document.createElement('strong'); ttl.textContent = ADD_LABELS[mode]; head.appendChild(ttl);
+    const x = document.createElement('button'); x.type = 'button'; x.className = 'icon-btn add-x'; x.setAttribute('aria-label', 'Cancel'); x.innerHTML = '<svg class="i"><use href="#i-x"/></svg>';
+    x.addEventListener('click', () => cancelAdd()); head.appendChild(x);
+    panel.appendChild(head);
+    const mk = (ph, cls) => { const i = document.createElement('input'); i.type = 'text'; i.className = 'add-input ' + cls; i.placeholder = ph; i.autocomplete = 'off'; i.spellcheck = true; i.setAttribute('aria-label', ph); i.setAttribute('enterkeyhint', 'done'); panel.appendChild(i); return i; };
+    f.inputs = [];
+    if (mode === 'wrap') {
+      const p = document.createElement('p'); p.className = 'add-wrap-text'; p.textContent = 'The edited line runs past its column. Pdfroo can keep what fits and put the rest on a new line below, moving what’s under it down.'; panel.appendChild(p);
+    } else {
+      f.inputs.push(mk(mode === 'section' ? 'Section heading, e.g. CERTIFICATIONS' : mode === 'bullet' ? 'Type the new bullet point' : 'Type the new line', 'add-text'));
+      if (mode === 'section') f.inputs.push(mk('First line under it (optional)', 'add-body'));
+    }
+    const info = document.createElement('div'); info.className = 'add-info'; info.setAttribute('aria-live', 'polite'); panel.appendChild(info);
+    const acts = document.createElement('div'); acts.className = 'add-actions';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn btn-ghost add-cancel'; cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => cancelAdd());
+    const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'btn btn-primary add-apply'; ok.textContent = mode === 'wrap' ? 'Wrap' : 'Add'; ok.disabled = true;
+    ok.addEventListener('click', () => applyAdd());
+    acts.append(cancel, ok); panel.appendChild(acts);
+    f.panel = panel; f.info = info; f.ok = ok;
+    f.inputs.forEach((i) => {
+      i.addEventListener('input', () => { clearTimeout(f.timer); f.timer = setTimeout(() => planAdd(), 260); });
+      i.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); cancelAdd(); } else if (e.key === 'Enter') { e.preventDefault(); clearTimeout(f.timer); planAdd().then(() => { if (ui.addFlow === f && f.plan && f.plan.ok) applyAdd(); }); } });
+    });
+    document.body.appendChild(panel);
+    positionAddPanel();
+    buildPropbar(); renderOverlay();
+    if (f.inputs[0]) setTimeout(() => f.inputs[0].focus({ preventScroll: !isPhone() }), 0);
+    planAdd();
+  }
+  function positionAddPanel() {
+    const f = ui.addFlow; if (!f || !f.panel) return;
+    if (isPhone()) { f.panel.classList.add('sheet'); f.panel.classList.remove('side'); return; }
+    // desktop / tablet: beside the page so the preview stays visible; at the bottom of the view when there's no room
+    const vr = viewport.getBoundingClientRect(), pr = pageWrap.getBoundingClientRect();
+    const w = 340, room = vr.right - Math.min(vr.right, pr.right);
+    f.panel.classList.remove('sheet');
+    if (room >= w + 24) { f.panel.classList.add('side'); Object.assign(f.panel.style, { left: (vr.right - w - 16) + 'px', top: (vr.top + 72) + 'px', width: w + 'px', bottom: '' }); }
+    else { f.panel.classList.add('side'); Object.assign(f.panel.style, { left: Math.max(vr.left + 8, vr.right - w - 16) + 'px', top: '', bottom: (window.innerHeight - vr.bottom + 72) + 'px', width: w + 'px' }); }
+  }
+  async function planAdd() {
+    const f = ui.addFlow; if (!f) return;
+    const pg = doc && doc.pages.find((p) => p.id === f.pageId); if (!pg) return;
+    const pi = doc.pages.indexOf(pg);
+    const text = f.inputs[0] ? f.inputs[0].value : '';
+    const token = ++f.token;
+    let plan;
+    try {
+      if (f.mode === 'wrap') plan = await E.previewWrapEdit(doc, pi, f.anchorId, { region: f.region });
+      else if (!text.trim()) plan = null;
+      else plan = await E.planInsert(doc, pi, f.anchorId, f.mode, text, { body: f.inputs[1] ? f.inputs[1].value : '', region: f.region });
+    } catch (err) { console.error(err); plan = { ok: false, message: 'Pdfroo couldn’t work out where this goes.' }; }
+    if (ui.addFlow !== f || token !== f.token) return;
+    f.plan = plan;
+    renderAddInfo(); renderOverlay(); positionAddPanel();
+  }
+  function renderAddInfo() {
+    const f = ui.addFlow; if (!f) return;
+    const p = f.plan; const box = f.info; box.replaceChildren();
+    const line = (cls, txt) => { const d = document.createElement('p'); d.className = cls; d.textContent = txt; box.appendChild(d); return d; };
+    if (!p) { line('add-hint', f.mode === 'section' ? 'Type a heading — the preview shows where it goes and what moves down.' : 'Start typing — the preview shows where it goes and what moves down.'); f.ok.disabled = true; return; }
+    if (p.ok || p.counts) {
+      const c = p.counts || {};
+      const parts = [];
+      if (c.lines) parts.push(`${c.lines} line${c.lines === 1 ? '' : 's'}`);
+      if (c.bullets) parts.push(`${c.bullets} bullet${c.bullets === 1 ? '' : 's'}`);
+      if (c.paths) parts.push(`${c.paths} divider${c.paths === 1 ? '' : 's'}/shape${c.paths === 1 ? '' : 's'}`);
+      if (c.images) parts.push(`${c.images} image${c.images === 1 ? '' : 's'}`);
+      if (c.links) parts.push(`${c.links} link${c.links === 1 ? '' : 's'}`);
+      if (c.annots) parts.push(`${c.annots} of your annotation${c.annots === 1 ? '' : 's'}`);
+      line('add-summary', parts.length ? `Moves ${parts.join(', ')} down ${Math.abs(p.dy).toFixed(1)} pt (outlined). The other column stays put.` : 'Nothing below needs to move.');
+      const nl = (p.newLines || []).filter((l) => !l.clone);
+      if (nl.length) line('add-font', nl[0].label + (new Set(nl.map((l) => l.y.toFixed(1))).size > 1 ? ` · wraps to ${new Set(nl.map((l) => l.y.toFixed(1))).size} lines` : ''));
+    }
+    if (p.uncertain) {
+      const u = line('add-uncertain', (p.notes && p.notes[0]) || 'The column edges are a guess.');
+      u.appendChild(document.createTextNode(' Drag the orange edges on the page to fix the column, then check the outlines.'));
+      (p.notes || []).slice(1).forEach((n) => line('add-note', n));
+    } else (p.notes || []).forEach((n) => line('add-note', n));
+    if (!p.ok) line('add-error', p.message || 'This can’t be added safely.');
+    if (f.region) {
+      const r = document.createElement('button'); r.type = 'button'; r.className = 'btn btn-ghost btn-sm add-reset'; r.textContent = 'Reset column edges';
+      r.addEventListener('click', () => { f.region = null; planAdd(); }); box.appendChild(r);
+    }
+    f.ok.disabled = !p.ok;
+  }
+  function drawAddPreview(pg) {
+    const f = ui.addFlow; if (!f || f.pageId !== pg.id || !f.plan || !f.plan.preview) return;
+    const p = f.plan, pr = p.preview, z = ui.zoom, ds = E.displaySize(pg);
+    const g = svg('g', { class: 'reflow-preview' + (p.uncertain ? ' uncertain' : '') + (p.ok ? '' : ' blocked') }, overlay);
+    const R = pr.region, yBot = Math.min(ds.h, R.yBot);
+    svg('rect', { class: 'rf-region', x: R.x0, y: R.yTop, width: Math.max(1, R.x1 - R.x0), height: Math.max(1, yBot - R.yTop), 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g);
+    (R.extra || []).forEach((e) => svg('rect', { class: 'rf-region extra', x: e.x0, y: e.yTop, width: e.x1 - e.x0, height: ds.h - e.yTop, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
+    pr.moved.forEach((b) => {
+      svg('rect', { class: 'rf-moved', x: b.x - 1 / z, y: b.y - 1 / z, width: b.w + 2 / z, height: Math.max(b.h, 1 / z) + 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g);
+      svg('rect', { class: 'rf-ghost', x: b.x - 1 / z, y: b.y + pr.ddy - 1 / z, width: b.w + 2 / z, height: Math.max(b.h, 1 / z) + 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g);
+    });
+    pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: b.h + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
+    pr.conflicts.forEach((b) => svg('rect', { class: 'rf-conflict', x: b.x - 2 / z, y: b.y - 2 / z, width: b.w + 4 / z, height: b.h + 4 / z, 'stroke-width': 2 / z, 'pointer-events': 'none' }, g));
+    // draggable column edges
+    const hitW = (window.matchMedia('(pointer: coarse)').matches ? 28 : 14) / z;
+    [['x0', R.x0], ['x1', R.x1]].forEach(([side, xv]) => {
+      if (xv <= 0.5 || xv >= ds.w - 0.5) { if (!p.uncertain) return; xv = Math.max(1 / z, Math.min(ds.w - 1 / z, xv)); }
+      const hg = svg('g', { class: 'rf-edge', 'data-rfedge': side, role: 'slider', 'aria-label': side === 'x0' ? 'Left edge of the column' : 'Right edge of the column' }, g);
+      svg('rect', { class: 'rf-edge-hit', x: xv - hitW / 2, y: R.yTop, width: hitW, height: Math.max(20 / z, yBot - R.yTop) }, hg);
+      svg('line', { class: 'rf-edge-line', x1: xv, x2: xv, y1: R.yTop, y2: yBot, 'stroke-width': 2.5 / z }, hg);
+      svg('rect', { class: 'rf-edge-knob', x: xv - 5 / z, y: R.yTop + 6 / z, width: 10 / z, height: 26 / z, rx: 5 / z, 'stroke-width': 1.5 / z }, hg);
+    });
+  }
+  function startEdgeDrag(e, side) {
+    const f = ui.addFlow; if (!f || !f.plan) return;
+    e.preventDefault(); e.stopPropagation();
+    const pr = f.plan.preview, off = f.plan.region.x0 - pr.region.x0;     // display x -> PDF x
+    const rect = overlay.getBoundingClientRect();
+    const line = overlay.querySelector(`[data-rfedge="${side}"]`);
+    let xv = side === 'x0' ? pr.region.x0 : pr.region.x1;
+    const move = (ev) => {
+      xv = (ev.clientX - rect.left) / ui.zoom;
+      if (line) line.setAttribute('transform', `translate(${xv - (side === 'x0' ? pr.region.x0 : pr.region.x1)} 0)`);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+      const cur = { x0: f.plan.region.x0, x1: f.plan.region.x1 };
+      cur[side] = xv + off;
+      if (cur.x1 - cur.x0 < 20) { renderOverlay(); return; }
+      f.region = cur; planAdd();
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+  }
+  function cancelAdd(silent) {
+    const f = ui.addFlow; if (!f) return;
+    ui.addFlow = null; clearTimeout(f.timer);
+    if (f.panel) f.panel.remove();
+    if (!silent) { renderOverlay(); buildPropbar(); }
+  }
+  async function applyAdd() {
+    const f = ui.addFlow; if (!f || !f.plan || !f.plan.ok || f.busy) return;
+    const pg = doc.pages.find((p) => p.id === f.pageId); if (!pg) return;
+    const pi = doc.pages.indexOf(pg);
+    f.busy = true; f.ok.disabled = true;
+    busy(true, f.mode === 'wrap' ? 'Wrapping the line…' : 'Adding and moving the content below…');
+    const snap = snapshot();
+    let res;
+    try { res = f.mode === 'wrap' ? await E.applyWrapEdit(doc, pi, f.anchorId, { region: f.region }) : await E.applyInsert(doc, pi, f.plan); }
+    catch (err) { console.error(err); res = { ok: false, message: 'Something went wrong, so nothing was changed.' }; }
+    busy(false);
+    if (ui.addFlow !== f) return;
+    if (!res.ok) { f.busy = false; toast(res.message, 'error'); planAdd(); return; }
+    // one undo step for the whole operation (a wrap also folds in the edit that made the line too long)
+    if (!(f.mergeSnap && ui.history[ui.history.length - 1] === f.mergeSnap)) pushHistory(snap); else { ui.future = []; ui.dirty = true; updateChrome(); }
+    cancelAdd(true);
+    toast(res.message, 'ok');
+    if (pi === ui.current) renderPage();
+    refreshThumb(pi);
+    buildPropbar(); updateChrome();
+  }
+  /** After an edit: offer to wrap a line that now runs past its column (never done without asking). */
+  async function offerWrap(pg, lineId) {
+    let w;
+    try { w = await E.planWrapEdit(doc, doc.pages.indexOf(pg), lineId); } catch (err) { console.warn(err); return; }
+    if (!w || !w.ok || !doc || curPage() !== pg || ui.addFlow || ui.lineEdit) return;
+    const snap = ui.history[ui.history.length - 1];
+    const t = document.createElement('div'); t.className = 'toast wrap-offer'; t.setAttribute('role', 'status');
+    const p = document.createElement('span'); p.textContent = 'This line now runs past its column.'; t.appendChild(p);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-primary btn-sm wrap-yes'; b.textContent = 'Wrap…';
+    b.addEventListener('click', () => { t.remove(); startAdd('wrap', lineId, { mergeSnap: snap }); });
+    const n = document.createElement('button'); n.type = 'button'; n.className = 'btn btn-ghost btn-sm wrap-no'; n.textContent = 'Keep';
+    n.addEventListener('click', () => t.remove());
+    t.append(b, n);
+    $('#toasts').appendChild(t);
+    setTimeout(() => { if (t.isConnected) t.remove(); }, 12000);
   }
   function refreshThumb(i) {
     const li = thumbList.children[i]; if (!li) return;
@@ -1407,12 +1623,15 @@
         inner.appendChild(fc);
         if (ui.lineEdit.info) lineStyleTools(inner, sep, hint);
         addNudge();
-      } else if (!data) inner.appendChild(hint('i-text-edit', 'Reading the text on this page…'));
+        addTools(inner, sep, ui.lineEdit.ln.id);
+      } else if (ui.addFlow) inner.appendChild(hint('i-plus', ui.addFlow.plan && ui.addFlow.plan.uncertain ? 'Check the outlined area — drag the orange column edges if they’re wrong' : 'Outlined: what moves down · dashed: where it goes'));
+      else if (!data) inner.appendChild(hint('i-text-edit', 'Reading the text on this page…'));
       else if (data.refusal) inner.appendChild(hint('i-help', data.refusal.message));
       else {
         if (!sel.length) inner.appendChild(hint('i-text-edit', isPhone() ? 'Tap a line of text to change it' : 'Click any outlined line of text to change it'));
         else inner.appendChild(fontChip(sel.length > 1 ? `${sel.length} runs selected` : (() => { const l = data.lines.find((x) => x.id === sel[0]); return l ? (l.bullet ? 'Bullet · ' : '') + (l.label || l.fontLabel) : ''; })()));
         addNudge();
+        if (sel.length === 1) { const l = data.lines.find((x) => x.id === sel[0]); if (l && !l.bullet) addTools(inner, sep, l.id); }
         const stray = data.lines.filter((l) => l.strayBullet && l.movable);
         if (stray.length) {
           inner.appendChild(sep());
