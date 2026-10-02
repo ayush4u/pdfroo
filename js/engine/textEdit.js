@@ -87,7 +87,7 @@
       }
       if (c === 91) { if (!stack.length && argStart < 0) argStart = start; stack.push([]); i++; continue; }
       if (c === 93) { const arr = stack.pop() || []; i++; pushVal({ t: 'arr', items: arr }, start); continue; }
-      if (c === 47) { i++; while (i < n && !isWS(str.charCodeAt(i)) && !isDelim(str.charCodeAt(i))) i++; pushVal({ t: 'name', v: str.slice(start + 1, i) }, start); continue; }
+      if (c === 47) { i++; while (i < n && !isWS(str.charCodeAt(i)) && !isDelim(str.charCodeAt(i))) i++; pushVal({ t: 'name', v: str.slice(start + 1, i), s: start, e: i }, start); continue; }
       if (c === 123 || c === 125 || c === 62) { i++; continue; }
       // number or keyword
       while (i < n && !isWS(str.charCodeAt(i)) && !isDelim(str.charCodeAt(i))) i++;
@@ -145,6 +145,7 @@
       const Trm0 = mul([ts.Tfs * ts.Th, 0, 0, ts.Tfs, 0, ts.Ts], mul(Tm, gs.ctm));
       const rec = { i: opIndex, op: op.op, s: op.s, e: op.e, font: prefix + ts.font, Tfs: ts.Tfs, Th: ts.Th,
         start: [Trm0[4], Trm0[5]], m: Trm0, Tm0: Tm.slice(), Tlm: Tlm.slice(), ctm: gs.ctm.slice(), fill: gs.fill, Tr: ts.Tr, lw: (gs.lw == null ? 1 : gs.lw) * Math.sqrt(Math.abs(gs.ctm[0] * gs.ctm[3] - gs.ctm[1] * gs.ctm[2])), codes: [], gx: [], text: '', known: !!f && !f.unknown, seq: ctx.seq++, form: !!prefix };
+      { const M = mul(Tm, gs.ctm), sx = Math.hypot(M[0], M[1]); rec.tcU = ts.Tc * ts.Th * sx; rec.twU = ts.Tw * ts.Th * sx; }   // spacing in user space
       let adv = 0;            // in unscaled text space units (before Th)
       let inkAdv = 0;         // advance up to the end of the last non-blank glyph
       let firstInk = null;    // advance before the first non-blank glyph
@@ -310,6 +311,7 @@
   function decodeStreamBytes(L, obj) {
     if (!obj) return null;
     if (obj instanceof L.PDFRawStream) return L.decodePDFRawStream(obj).decode();
+    if (obj.getUnencodedContents) { try { return obj.getUnencodedContents(); } catch (e) { /* not a pdf-lib content stream */ } }   // q / Q wrappers pdf-lib adds
     if (obj.getContents) return obj.getContents();
     return null;
   }

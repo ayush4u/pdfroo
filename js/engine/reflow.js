@@ -114,6 +114,21 @@
     return dy;
   }
 
+  /** How far above a region's top a path may start and still move with it: a clip-only path must start inside; a painted
+   *  box may poke up a little (a tag pill behind its text) but not span the cut (a page-white or sidebar fill, a frame). */
+  const pathPoke = (it) => (it.painted ? Math.min(0.5 * (it.bbox[3] - it.bbox[1]), 6) : 0.1);
+  /** dy for a scanned item: like shiftFor, but a path only moves when it starts inside the shifted region (pathPoke). */
+  function itemShift(it, shifts) {
+    if (it.kind !== 'path') return shiftFor(it.bbox, shifts);
+    const poke = pathPoke(it);
+    let b = it.bbox.slice(), dy = 0;
+    for (const s of shifts || []) {
+      const t = s.tol == null ? 1 : s.tol;
+      if (inRegion(b, s.rects, s.tol) && s.rects.some((r) => b[0] >= r.x0 - t && b[2] <= r.x1 + t && b[3] <= r.yTop + poke)) { b = [b[0], b[1] + s.dy, b[2], b[3] + s.dy]; dy += s.dy; }
+    }
+    return dy;
+  }
+
   /* ---------------- content-stream rewrites ---------------- */
   const inv = (m) => { const d = m[0] * m[3] - m[1] * m[2]; return d ? [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[3] * m[4]) / d, (m[1] * m[4] - m[0] * m[5]) / d] : null; };
   /** (0, dy) in page space expressed in the user space of matrix m. */
@@ -140,14 +155,26 @@
    */
   function shiftReps(str, scan, dyOf) {
     const reps = [];
-    for (const it of scan.items) {
-      const dy = dyOf(it);
+    for (let k = 0; k < scan.items.length; k++) {
+      const it = scan.items[k];
+      const dy = dyOf(it, k);
       if (!dy || it.kind === 'shading') continue;
       const d = userDelta(it.ctm, 0, dy); if (!d) continue;
       if (it.kind === 'path') {
         const mv = movedPathOps(it.ops, d[0], d[1]);
         it.ops.forEach((op, k) => { if (mv[k] != null && op.op !== 'h') reps.push({ s: op.s, e: op.e, text: mv[k] }); });
       } else reps.push({ s: it.s, e: it.e, text: `q 1 0 0 1 ${fmt(d[0])} ${fmt(d[1])} cm ${str.slice(it.s, it.e)} Q` });
+    }
+    return reps;
+  }
+  /** Replacements that make items (indices into scan.items) paint nothing: a path keeps its construction (and any clip)
+      but its paint op becomes 'n'; an image / form / inline image / shading op is removed. */
+  function dropReps(ops, scan, keys) {
+    const reps = [];
+    for (const k of keys) {
+      const it = scan.items[k]; if (!it) continue;
+      if (it.kind === 'path') { if (!it.painted) continue; const po = ops[it.i1]; if (po) reps.push({ s: po.s, e: po.e, text: it.clip ? 'n' : 'n' }); }
+      else reps.push({ s: it.s, e: it.e, text: '' });
     }
     return reps;
   }
@@ -231,5 +258,5 @@
     return out;
   }
 
-  root.FolioReflow = { scanGeometry, inRegion, shiftFor, shiftReps, clonePath, userDelta, buildRows, findGutters, columnGutters, BULLET_RE, fmt };
+  root.FolioReflow = { scanGeometry, inRegion, shiftFor, itemShift, pathPoke, shiftReps, dropReps, clonePath, userDelta, buildRows, findGutters, columnGutters, BULLET_RE, fmt };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -1450,18 +1450,21 @@
     try {
       if (f.mode === 'wrap') plan = await E.previewWrapEdit(doc, pi, f.anchorId, { region: f.region });
       else if (!text.trim()) plan = null;
-      else plan = await E.planInsert(doc, pi, f.anchorId, f.mode, text, { body: f.inputs[1] ? f.inputs[1].value : '', region: f.region });
+      else plan = await E.planInsert(doc, pi, f.anchorId, f.mode, text, { body: f.inputs[1] ? f.inputs[1].value : '', region: f.region, fit: !!f.fit });
     } catch (err) { console.error(err); plan = { ok: false, message: 'Pdfroo couldn’t work out where this goes.' }; }
     if (ui.addFlow !== f || token !== f.token) return;
     f.plan = plan;
     renderAddInfo(); renderOverlay(); positionAddPanel();
+    revealFlowOnPhone(f);
   }
+  // only say "the other column stays put" when the moving region really is a column
+  const narrowRegion = (f, p) => { const pg = doc && doc.pages.find((q) => q.id === f.pageId); return !!(pg && p.region.x1 - p.region.x0 < 0.8 * pg.w); };
   function renderAddInfo() {
     const f = ui.addFlow; if (!f) return;
     const p = f.plan; const box = f.info; box.replaceChildren();
     const line = (cls, txt) => { const d = document.createElement('p'); d.className = cls; d.textContent = txt; box.appendChild(d); return d; };
     if (!p) { line('add-hint', f.mode === 'section' ? 'Type a heading — the preview shows where it goes and what moves down.' : 'Start typing — the preview shows where it goes and what moves down.'); f.ok.disabled = true; return; }
-    if (p.ok || p.counts) {
+    if (p.ok) {
       const c = p.counts || {};
       const parts = [];
       if (c.lines) parts.push(`${c.lines} line${c.lines === 1 ? '' : 's'}`);
@@ -1470,21 +1473,53 @@
       if (c.images) parts.push(`${c.images} image${c.images === 1 ? '' : 's'}`);
       if (c.links) parts.push(`${c.links} link${c.links === 1 ? '' : 's'}`);
       if (c.annots) parts.push(`${c.annots} of your annotation${c.annots === 1 ? '' : 's'}`);
-      line('add-summary', parts.length ? `Moves ${parts.join(', ')} down ${Math.abs(p.dy).toFixed(1)} pt (outlined). The other column stays put.` : 'Nothing below needs to move.');
+      line('add-summary', parts.length ? `Moves ${parts.join(', ')} down ${Math.abs(p.dy).toFixed(1)} pt (outlined).${p.region && narrowRegion(f, p) ? ' The other column stays put.' : ''}` : 'Nothing below needs to move.');
       const nl = (p.newLines || []).filter((l) => !l.clone);
       if (nl.length) line('add-font', nl[0].label + (new Set(nl.map((l) => l.y.toFixed(1))).size > 1 ? ` · wraps to ${new Set(nl.map((l) => l.y.toFixed(1))).size} lines` : ''));
+      if (p.ok && p.flowInfo) renderFlowMini(f, p, box, line);
     }
     if (p.uncertain) {
       const u = line('add-uncertain', (p.notes && p.notes[0]) || 'The column edges are a guess.');
       u.appendChild(document.createTextNode(' Drag the orange edges on the page to fix the column, then check the outlines.'));
       (p.notes || []).slice(1).forEach((n) => line('add-note', n));
     } else (p.notes || []).forEach((n) => line('add-note', n));
+    if (p.ok && p.fit) line('add-note', `Kept on one page: tightens ${p.fit.gaps} gap${p.fit.gaps === 1 ? '' : 's'} by up to ${p.fit.gap} pt (${p.fit.total} pt in all${p.fit.paraGaps ? ', paragraph gaps first' : ''}; never below 90%, font size unchanged).`);
     if (!p.ok) line('add-error', p.message || 'This can’t be added safely.');
+    if (p.fitOffer || (f.fit && (p.fit || p.fitFail))) {
+      const k = document.createElement('button'); k.type = 'button'; k.className = 'btn btn-ghost btn-sm add-fit';
+      k.textContent = f.fit ? 'Let it carry on instead' : `Keep on one page (tighten gaps to absorb ${Math.ceil(p.overflow || 0)} pt)`;
+      k.title = f.fit ? 'Undo the tightening and let what doesn’t fit move on' : 'Tighten only the gaps between the lines below so everything stays on this page';
+      k.addEventListener('click', () => { f.fit = !f.fit; planAdd(); }); box.appendChild(k);
+    }
     if (f.region) {
       const r = document.createElement('button'); r.type = 'button'; r.className = 'btn btn-ghost btn-sm add-reset'; r.textContent = 'Reset column edges';
       r.addEventListener('click', () => { f.region = null; planAdd(); }); box.appendChild(r);
     }
     f.ok.disabled = !p.ok;
+  }
+  /** Content that doesn't fit carries on: say where, and show the page it lands on with the incoming block outlined. */
+  function renderFlowMini(f, p, box, line) {
+    const fi = p.flowInfo;
+    line('add-flow', `Doesn’t fit on this page: ${fi.text}. Purple outline = what moves on; one Undo puts everything back.`);
+    const pages = E.flowPreviewPages(doc, p);
+    const tgt = pages.find((x) => x.index === fi.toPage) || pages[0];
+    if (!tgt) return;
+    const wrap = document.createElement('div'); wrap.className = 'add-flow-mini';
+    const cap = document.createElement('div'); cap.className = 'add-flow-cap'; cap.textContent = `Page ${tgt.index + 1}${tgt.added ? ' (new)' : ''} after adding`;
+    const fr = document.createElement('div'); fr.className = 'add-flow-frame';
+    wrap.append(cap, fr); box.appendChild(wrap);
+    const W = 150, ds = E.displaySize(tgt.page), k = W / ds.w;
+    fr.style.width = W + 'px'; fr.style.height = Math.round(ds.h * k) + 'px';
+    E.renderThumbnail(tgt.page, W, window.devicePixelRatio || 1).then((url) => {
+      if (ui.addFlow !== f || f.plan !== p) return;
+      const img = document.createElement('img'); img.src = url; img.alt = `Preview of page ${tgt.index + 1}`; fr.appendChild(img);
+      (fi.incoming[tgt.index] || []).forEach((b) => {
+        const o = document.createElement('div'); o.className = 'add-flow-in';
+        Object.assign(o.style, { left: (b.x * k - 2) + 'px', top: (b.y * k - 2) + 'px', width: (b.w * k + 4) + 'px', height: (b.h * k + 4) + 'px' });
+        const t = document.createElement('span'); t.textContent = '← from page ' + ((p.pageIndex || 0) + 1); o.appendChild(t);
+        fr.appendChild(o);
+      });
+    }).catch((err) => console.warn(err));
   }
   function drawAddPreview(pg) {
     const f = ui.addFlow; if (!f || f.pageId !== pg.id || !f.plan || !f.plan.preview) return;
@@ -1498,6 +1533,18 @@
       svg('rect', { class: 'rf-ghost', x: b.x - 1 / z, y: b.y + pr.ddy - 1 / z, width: b.w + 2 / z, height: Math.max(b.h, 1 / z) + 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g);
     });
     pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: b.h + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
+    if (p.ok && p.flowInfo && p.flowInfo.out.length) {
+      // what carries on to the next page / column: outlined in purple with a "→ page N" tag
+      const fo = p.flowInfo.out;
+      fo.forEach((b) => svg('rect', { class: 'rf-flowout', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: Math.max(b.h, 1 / z) + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
+      const top = fo.reduce((a, b) => (b.y < a.y ? b : a), fo[0]);
+      const tag = svg('g', { class: 'rf-flowtag', 'pointer-events': 'none' }, g);
+      // tag sits just above the outlined block, at its left edge (the panel can cover the right side)
+      const fs = 11 / z, tw = (p.flowInfo.label.length * 6.4 + 10) / z, tx = Math.max(0, Math.min(ds.w - tw - 2 / z, Math.min(...fo.map((b) => b.x)) - 1.5 / z));
+      const ty = top.y - fs * 1.5 - 3 / z >= 0 ? top.y - fs * 1.5 - 3 / z : top.y - fs * 0.2;
+      svg('rect', { x: tx, y: ty, width: tw, height: fs * 1.5, rx: 3 / z }, tag);
+      const t = svg('text', { x: tx + 5 / z, y: ty + fs * 1.15, 'font-size': fs }, tag); t.textContent = p.flowInfo.label;
+    }
     pr.conflicts.forEach((b) => svg('rect', { class: 'rf-conflict', x: b.x - 2 / z, y: b.y - 2 / z, width: b.w + 4 / z, height: b.h + 4 / z, 'stroke-width': 2 / z, 'pointer-events': 'none' }, g));
     // draggable column edges
     const hitW = (window.matchMedia('(pointer: coarse)').matches ? 28 : 14) / z;
@@ -1529,10 +1576,27 @@
     };
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
   }
+  // phone: the bottom sheet covers the bottom of the page, which is exactly where overflow happens. Give the page
+  // room to scroll above the sheet and bring the purple "→ page N" outline into view once per preview.
+  function revealFlowOnPhone(f) {
+    if (ui.addFlow !== f || !f.panel) return;
+    const fi = f.plan && f.plan.ok && f.plan.flowInfo;
+    if (!isPhone() || !fi) { pageWrap.style.marginBottom = ''; return; }
+    pageWrap.style.marginBottom = f.panel.offsetHeight + 'px';
+    if (f.flowShown === fi.label + fi.out.length) return;
+    f.flowShown = fi.label + fi.out.length;
+    requestAnimationFrame(() => {
+      const tag = document.querySelector('.rf-flowtag'); if (!tag || ui.addFlow !== f) return;
+      const t = tag.getBoundingClientRect(), vr = viewport.getBoundingClientRect(), sheetTop = f.panel.getBoundingClientRect().top;
+      const want = Math.max(vr.top + 8, sheetTop - 140);     // tag ~140 px above the sheet: the outlined block shows below it
+      viewport.scrollBy({ top: t.top - want, behavior: 'auto' });
+    });
+  }
   function cancelAdd(silent) {
     const f = ui.addFlow; if (!f) return;
     ui.addFlow = null; clearTimeout(f.timer);
     if (f.panel) f.panel.remove();
+    pageWrap.style.marginBottom = '';
     if (!silent) { renderOverlay(); buildPropbar(); }
   }
   async function applyAdd() {
@@ -1552,9 +1616,12 @@
     if (!(f.mergeSnap && ui.history[ui.history.length - 1] === f.mergeSnap)) pushHistory(snap); else { ui.future = []; ui.dirty = true; updateChrome(); }
     cancelAdd(true);
     toast(res.message, 'ok');
-    if (pi === ui.current) renderPage();
-    refreshThumb(pi);
-    buildPropbar(); updateChrome();
+    if (res.pagesChanged) renderAll();          // content flowed onto other pages (maybe a new one): every thumbnail
+    else {
+      if (pi === ui.current) renderPage();
+      refreshThumb(pi);
+      buildPropbar(); updateChrome();
+    }
   }
   /** After an edit: offer to wrap a line that now runs past its column (never done without asking). */
   async function offerWrap(pg, lineId) {

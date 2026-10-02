@@ -214,12 +214,12 @@
     let cancelled = false, task = null;
     const promise = (async () => {
       const ctx = canvas.getContext('2d');
-      if (pg.src == null || !sources[pg.src]) {
+      if ((pg.src == null || !sources[pg.src]) && !(pg.incoming && pg.incoming.length)) {
         canvas.width = Math.max(1, Math.floor(ds.w * s)); canvas.height = Math.max(1, Math.floor(ds.h * s));
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         return;
       }
-      const edited = ((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length)) && sources[pg.src].libDoc;
+      const edited = pg.src == null || !sources[pg.src] || (((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length) || hasFlow(pg)) && sources[pg.src].libDoc);
       const page = edited ? await (await getEditedProxy(pg)).getPage(1) : await sources[pg.src].pdf.getPage(pg.index + 1);
       if (cancelled) return;
       const vp = page.getViewport({ scale: s, rotation: totalRotation(pg) });
@@ -1295,6 +1295,12 @@
     if (pg.src == null || !sources[pg.src]) return { refusal: { code: 'blank', message: 'This page has no text to edit (it’s a blank page you added).' }, lines: [] };
     if (!sources[pg.src].libDoc) return { refusal: { code: 'unsupported', message: 'Pdfroo couldn’t read this PDF’s structure, so its text can’t be edited.' }, lines: [] };
     const an = await analyzePage(pg.src, pg.index);
+    // visible text drawn through a Form XObject: the page is unpacked (pixel-verified) the first time it's opened for editing,
+    // so later line edits and "Add like this" work on real page operators (only while the page has no edits yet)
+    if (pristinePage(pg) && !an.refusal && an.shows.some((x) => x.form && x.Tr !== 3 && x.Tr !== 7)) {
+      const nz = await normalizedSource(pg.src, pg.index);
+      if (nz.src && pristinePage(pg) && sources[nz.src]) { pg.src = nz.src; return getTextLines(pg); }
+    }
     const vp = an.page.getViewport({ scale: 1, rotation: totalRotation(pg) });
     const edits = pg.textEdits || [];
     const out = [];
@@ -1888,13 +1894,17 @@
 
   /** Apply text edits to a pdf-lib page (must run before any other drawing on that page). */
   let lastDroppedReps = [];
-  async function applyTextEditsToPage(doc, page, edits, srcSim, fontsForDoc, shifts, showBoxes) {
+  async function applyTextEditsToPage(doc, page, edits, srcSim, fontsForDoc, shifts, showBoxes, drops, flowIns) {
     lastDroppedReps = [];
     const L = root.PDFLib, T = TI();
     const removed = new Set(), movedInStream = new Set();
     const streamEdits = edits.filter((e) => e.removal === 'stream');
     shifts = shifts && shifts.length ? shifts : null;
-    if ((streamEdits.length && srcSim) || shifts) {
+    drops = drops && (drops.shows.size || drops.items.size || drops.annots.size) ? drops : null;
+    const takenAnnots = [];
+    flowIns = flowIns && flowIns.length ? flowIns : null;
+    const tailIns = [];
+    if ((streamEdits.length && srcSim) || shifts || drops || flowIns) {
       const str = T.contentString(L, page);
       const ops = T.parseOps(str);
       const shows = T.simulate(ops, srcSim);
@@ -1912,6 +1922,26 @@
         m.shows.forEach((s) => reps.push({ s: s.s, e: s.e, text: T.replacementFor(s, ops[s.i]) }));
         removed.add(e.id);
       }
+      // content that flowed on to another column / page: its show ops keep only their pen advance, its paths paint nothing
+      let scan = null;
+      if (drops) {
+        const dshows = drops.sim ? T.simulate(ops, drops.sim) : shows;
+        for (const sh of dshows) if (drops.shows.has(sh.i) && !consumed.has(sh.i)) { reps.push({ s: sh.s, e: sh.e, text: T.replacementFor(sh, ops[sh.i]) }); consumed.add(sh.i); }
+        scan = RF().scanGeometry(ops, xinfoFor(L, page.node.Resources()));
+        RF().dropReps(ops, scan, drops.items).forEach((r) => reps.push(r));
+        // links on those lines leave this page (picked up by the page they flow to)
+        const arr = page.node.lookupMaybe(L.PDFName.of('Annots'), L.PDFArray);
+        if (arr && drops.annots.size) {
+          const keep = [];
+          for (let i = 0; i < arr.size(); i++) {
+            const d = arr.lookupMaybe(i, L.PDFDict);
+            const r = d && d.lookupMaybe(L.PDFName.of('Rect'), L.PDFArray);
+            if (drops.annots.has(i) && d) takenAnnots.push({ i, ref: arr.get(i), dict: d, rect: r ? r.asArray().map((x) => (x.asNumber ? x.asNumber() : 0)) : null });
+            else keep.push(arr.get(i));
+          }
+          page.node.set(L.PDFName.of('Annots'), doc.context.obj(keep));
+        }
+      }
       if (shifts) {
         // "Add like this": vector paths, images and forms below the insertion point move with the text
         for (const sh of shows) {
@@ -1920,8 +1950,8 @@
           const mv = T.movedFor(sh, ops[sh.i], 0, d, str.slice(sh.s, sh.e));
           if (mv) reps.push({ s: sh.s, e: sh.e, text: mv });
         }
-        const scan = RF().scanGeometry(ops, xinfoFor(L, page.node.Resources()));
-        RF().shiftReps(str, scan, (it) => RF().shiftFor(it.bbox, shifts)).forEach((r) => reps.push(r));
+        scan = scan || RF().scanGeometry(ops, xinfoFor(L, page.node.Resources()));
+        RF().shiftReps(str, scan, (it, k) => (drops && drops.items.has(k) ? 0 : RF().itemShift(it, shifts))).forEach((r) => reps.push(r));
         for (const a of annotRects(L, page.node)) {
           const d = RF().shiftFor(a.bbox, shifts); if (!d) continue;
           const r = a.dict.lookup(L.PDFName.of('Rect'), L.PDFArray).asArray().map((x) => (x.asNumber ? x.asNumber() : 0));
@@ -1930,8 +1960,22 @@
           if (qp) a.dict.set(L.PDFName.of('QuadPoints'), doc.context.obj(qp.asArray().map((x, k) => (x.asNumber ? x.asNumber() : 0) + (k % 2 ? d : 0))));
         }
       }
+      // content flowed in from another page / column: drawn just before the text it now precedes (reading order)
+      for (const fi of flowIns || []) {
+        // offsets were found on the source page; this copy may carry pdf-lib's q / Q wrapper streams, so find the same BT here
+        let at = fi.s;
+        if (fi.bt != null) {
+          const sigAt = (j) => ops.slice(j, j + 4).map((o) => str.slice(o.s, o.e)).join('\n');
+          let k = null;
+          for (let d = 0; d <= 8 && k == null; d++) for (const j of [fi.bt + d, fi.bt - d]) if (k == null && ops[j] && ops[j].op === 'BT' && sigAt(j) === fi.sig) k = j;
+          if (k == null) { tailIns.push(fi.text); continue; }
+          at = ops[k].s;
+        }
+        for (let k = 0; k < 20; k++) { const r = reps.find((x) => x.s < at && x.e > at); if (!r) break; at = r.s; }
+        reps.push({ s: at, e: at, text: fi.text, ins: true });
+      }
       if (reps.length) {
-        reps.sort((a, b) => b.s - a.s);
+        reps.sort((a, b) => (b.s - a.s) || ((a.ins ? 1 : 0) - (b.ins ? 1 : 0)));
         let out = str, lastStart = Infinity;
         for (const r of reps) { if (r.e > lastStart) { lastDroppedReps.push({ s: r.s, e: r.e, text: r.text.slice(0, 80), orig: str.slice(r.s, Math.min(r.e, r.s + 80)) }); continue; } out = out.slice(0, r.s) + r.text + out.slice(r.e); lastStart = r.s; }
         const ref = doc.context.register(doc.context.flateStream(T.latin1ToBytes(out)));
@@ -1967,7 +2011,8 @@
       const useT1 = e.tier === 1 && e.t1 && pageFontDict && (e.t1.keys || [e.t1.key]).every((k) => pageFontDict.has(L.PDFName.of(k)));
       if (useT1) {
         const trm = g.fb ? `${rgb(e.color)} RG ${f(g.fb)} w 2 Tr` : '0 Tr';
-        content += `q BT ${rgb(e.color)} rg /${e.t1.key} 1 Tf 0 Tc 0 Tw 100 Tz 0 Ts ${trm} ${f(g.size * g.hs * (e.fit || 1))} 0 0 ${f(g.size)} ${f(g.x)} ${f(g.y)} Tm ${e.t1.tj} ET Q\n`;
+        const spT = e.insert && e.sp ? (v) => f(v / (g.size * g.hs * (e.fit || 1))) : () => '0';
+        content += `q BT ${rgb(e.color)} rg /${e.t1.key} 1 Tf ${spT(e.sp ? e.sp.tc : 0)} Tc ${spT(e.sp ? e.sp.tw : 0)} Tw 100 Tz 0 Ts ${trm} ${f(g.size * g.hs * (e.fit || 1))} 0 0 ${f(g.size)} ${f(g.x)} ${f(g.y)} Tm ${e.t1.tj} ET Q\n`;
       } else if (e.sub && e.sub.indic) {
         const I = await indicEngine();
         const sh = await I.shape(e.text, { bold: e.sub.bold });
@@ -1986,6 +2031,130 @@
       }
     }
     if (content) page.node.addContentStream(doc.context.register(doc.context.flateStream(T.latin1ToBytes(content))));
+    if (tailIns.length) page.node.addContentStream(doc.context.register(doc.context.flateStream(T.latin1ToBytes('q ' + tailIns.join('') + 'Q\n'))));
+    return takenAnnots;
+  }
+
+  /** Drop sets of a page (content that flowed on): { shows, items, annots, lines } as Sets of op / item / annot indices / line ids. */
+  function dropSets(pg) {
+    const o = { shows: new Set(), items: new Set(), annots: new Set(), lines: new Set() };
+    for (const d of pg.drops || []) { (d.shows || []).forEach((v) => o.shows.add(v)); (d.items || []).forEach((v) => o.items.add(v)); (d.annots || []).forEach((v) => o.annots.add(v)); (d.lines || []).forEach((v) => o.lines.add(v)); }
+    return o;
+  }
+  async function dropsFor(pg) {
+    if (!pg.drops || !pg.drops.length || pg.src == null) return null;
+    const d = dropSets(pg); d.sim = (await pageGeometry(pg.src, pg.index)).sim; return d;
+  }
+  const hasFlow = (pg) => !!((pg.drops && pg.drops.length) || (pg.incoming && pg.incoming.length));
+  /**
+   * Content that flowed in from another column / page: the source page's own content stream with everything except the
+   * moved show ops / items painting nothing, drawn as a Form XObject (the source page's resources) translated by (dx, dy).
+   */
+  async function drawIncoming(doc, page, list, cache, self) {
+    const L = root.PDFLib, T = TI();
+    let tail = '';
+    const inserts = [];
+    const mul = (m, n) => [m[0] * n[0] + m[1] * n[2], m[0] * n[1] + m[1] * n[3], m[2] * n[0] + m[3] * n[2], m[2] * n[1] + m[3] * n[3], m[4] * n[0] + m[5] * n[2] + n[4], m[4] * n[1] + m[5] * n[3] + n[5]];
+    const inv = (m) => { const d = m[0] * m[3] - m[1] * m[2]; return Math.abs(d) < 1e-9 ? null : [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[3] * m[4]) / d, (m[1] * m[4] - m[0] * m[5]) / d]; };
+    // where in this page's own stream an incoming block goes: before the BT of the text it now precedes, in that point's user space
+    let selfOps = null, selfStr = '';
+    const anchor = (at) => {
+      if (!self || self.src == null || !sources[self.src] || !sources[self.src].libDoc) return null;
+      if (!selfOps) { const lp = sources[self.src].libDoc.getPage(self.index); selfStr = T.contentString(L, lp); selfOps = T.parseOps(selfStr); }
+      const ops = selfOps;
+      let bt;
+      if (at == null) bt = ops.length;          // after everything on the page, in the user space the page ends in
+      else { if (!ops[at]) return null; bt = at; while (bt >= 0 && ops[bt].op !== 'BT') bt--; if (bt < 0) return null; }
+      let ctm = [1, 0, 0, 1, 0, 0]; const stack = [];
+      for (let k = 0; k < bt; k++) {
+        const o = ops[k];
+        if (o.op === 'q') stack.push(ctm); else if (o.op === 'Q') ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+        else if (o.op === 'cm' && o.args.length === 6 && o.args.every((x) => x.t === 'num')) ctm = mul(o.args.map((x) => x.v), ctm);
+      }
+      const sig = at == null ? '' : ops.slice(bt, bt + 4).map((o) => selfStr.slice(o.s, o.e)).join('\n');
+      const ic = inv(ctm); return ic ? { s: at == null ? null : ops[bt].s, bt: at == null ? null : bt, sig, ic } : null;
+    };
+    for (const inc of list || []) {
+      const s = sources[inc.src]; if (!s || !s.libDoc) continue;
+      const key = inc.src + ':' + inc.index;
+      let rc = cache[key];
+      if (!rc) {
+        const [cp] = await doc.copyPages(s.libDoc, [inc.index]);
+        const res0 = cp.node.Resources() || cp.node.getInheritableAttribute(L.PDFName.of('Resources'));
+        // the source page's resources plus a graphics state that resets transparency (the block starts from defaults)
+        const res = doc.context.obj({});
+        if (res0) for (const [k, v] of res0.entries()) res.set(k, v);
+        const eg0 = res0 && res0.lookupMaybe(L.PDFName.of('ExtGState'), L.PDFDict);
+        const eg = doc.context.obj({});
+        if (eg0) for (const [k, v] of eg0.entries()) eg.set(k, v);
+        eg.set(L.PDFName.of('PdfrooFlowGS'), doc.context.obj({ Type: 'ExtGState', CA: 1, ca: 1, BM: 'Normal', SMask: 'None', LW: 1 }));
+        res.set(L.PDFName.of('ExtGState'), eg);
+        const lp = s.libDoc.getPage(inc.index);
+        const str = T.contentString(L, lp), ops = T.parseOps(str);
+        const g = await pageGeometry(inc.src, inc.index);
+        const shows = T.simulate(ops, g.sim);
+        const scan = RF().scanGeometry(ops, xinfoFor(L, lp.node.Resources()));
+        const mb = lp.getMediaBox();
+        rc = cache[key] = { res, str, ops, shows, scan, bbox: [mb.x - 1e4, mb.y - 1e4, mb.x + mb.width + 1e4, mb.y + mb.height + 1e4] };
+      }
+      const keepS = new Set(inc.shows || []), keepI = new Set(inc.items || []);
+      const reps = [];
+      for (const sh of rc.shows) if (!keepS.has(sh.i)) reps.push({ s: sh.s, e: sh.e, text: T.replacementFor(sh, rc.ops[sh.i]) });
+      const others = new Set(); rc.scan.items.forEach((it, k) => { if (!keepI.has(k)) others.add(k); });
+      RF().dropReps(rc.ops, rc.scan, others).forEach((r) => reps.push(r));
+      reps.sort((a, b) => b.s - a.s);
+      let out = rc.str, last = Infinity;
+      for (const r of reps) { if (r.e > last) continue; out = out.slice(0, r.s) + r.text + out.slice(r.e); last = r.s; }
+      const f = T.fmt;
+      const an = anchor(inc.at);
+      const M = mul([1, 0, 0, 1, inc.dx || 0, inc.dy || 0], an ? an.ic : [1, 0, 0, 1, 0, 0]).map((v) => +f(v));
+      const pre = 'q 0 g 0 G 1 w 0 J 0 j 10 M [] 0 d 0 Tc 0 Tw 100 Tz 0 TL 0 Tr 0 Ts /PdfrooFlowGS gs\n';
+      const stream = doc.context.flateStream(T.latin1ToBytes(pre + out + '\nQ\n'), { Type: 'XObject', Subtype: 'Form', BBox: rc.bbox, Matrix: M, Resources: rc.res });
+      const ref = doc.context.register(stream);
+      const name = addXObject(doc, page, ref);
+      if (an && an.s != null) inserts.push({ s: an.s, bt: an.bt, sig: an.sig, text: `q ${name} Do Q\n` });
+      else tail += `q ${name} Do Q\n`;
+    }
+    return { inserts, tail };
+  }
+  /** Register a form on the page without pdf-lib's normalize() (which wraps the content in q / Q and shifts op indices). */
+  let flowXoSeq = 0;
+  function addXObject(doc, page, ref) {
+    const L = root.PDFLib, N = (n) => L.PDFName.of(n);
+    let res = page.node.lookupMaybe(N('Resources'), L.PDFDict);
+    if (!res) {
+      const inh = page.node.getInheritableAttribute(N('Resources')), d = inh && doc.context.lookupMaybe(inh, L.PDFDict);
+      res = doc.context.obj({}); if (d) for (const [k, v] of d.entries()) res.set(k, v);
+      page.node.set(N('Resources'), res);
+    }
+    let xo = res.lookupMaybe(N('XObject'), L.PDFDict);
+    if (!xo) { xo = doc.context.obj({}); res.set(N('XObject'), xo); }
+    let name; do { name = 'PdfrooFlow' + (++flowXoSeq) + Math.random().toString(36).slice(2, 6); } while (xo.has(N(name)));
+    xo.set(N(name), ref);
+    return '/' + name;
+  }
+  function appendTail(doc, page, tail) {
+    if (tail) page.node.addContentStream(doc.context.register(doc.context.flateStream(TI().latin1ToBytes('q ' + tail + 'Q\n'))));
+  }
+  /** Links that flowed on with their lines: moved from the page that gave them up (rect translated). */
+  function placeIncomingAnnots(doc, page, list, taken) {
+    const L = root.PDFLib;
+    for (const inc of list || []) {
+      if (!inc.annots || !inc.annots.length) continue;
+      const pool = taken[inc.src + ':' + inc.index] || [];
+      for (const ai of inc.annots) {
+        const t = pool.find((x) => x.i === ai && !x.used); if (!t) continue;
+        t.used = true;
+        const dx = inc.dx || 0, dy = inc.dy || 0;
+        if (t.rect) t.dict.set(L.PDFName.of('Rect'), doc.context.obj([t.rect[0] + dx, t.rect[1] + dy, t.rect[2] + dx, t.rect[3] + dy]));
+        const qp = t.dict.lookupMaybe(L.PDFName.of('QuadPoints'), L.PDFArray);
+        if (qp) t.dict.set(L.PDFName.of('QuadPoints'), doc.context.obj(qp.asArray().map((x, k) => (x.asNumber ? x.asNumber() : 0) + (k % 2 ? dy : dx))));
+        t.dict.set(L.PDFName.of('P'), page.ref);
+        let arr = page.node.lookupMaybe(L.PDFName.of('Annots'), L.PDFArray);
+        if (!arr) { arr = doc.context.obj([]); page.node.set(L.PDFName.of('Annots'), arr); }
+        arr.push(t.ref);
+      }
+    }
   }
 
   function docFontLoader(doc) {
@@ -1998,20 +2167,26 @@
     })());
   }
 
-  const editsKey = (pg) => (pg.shifts && pg.shifts.length ? JSON.stringify(pg.shifts) : '') + (pg.textEdits && pg.textEdits.length ? JSON.stringify(pg.textEdits.map((e) => [e.lineId, e.text, e.tier, e.removal, e.sub && e.sub.key, e.color, e.bg, e.fit || 1, e.move ? [e.move.dx, e.move.dy] : 0, !!e.moveOnly, e.style || 0, e.alignDx || 0, e.justify || 0, e.t1 && e.t1.tj, e.insert ? [e.kind, e.geo.x, e.geo.y, e.newW] : 0])) : '');
+  const editsKey = (pg) => (hasFlow(pg) ? JSON.stringify([pg.drops || [], pg.incoming || []]) : '') + (pg.shifts && pg.shifts.length ? JSON.stringify(pg.shifts) : '') + (pg.textEdits && pg.textEdits.length ? JSON.stringify(pg.textEdits.map((e) => [e.lineId, e.text, e.tier, e.removal, e.sub && e.sub.key, e.color, e.bg, e.fit || 1, e.move ? [e.move.dx, e.move.dy] : 0, !!e.moveOnly, e.style || 0, e.alignDx || 0, e.justify || 0, e.t1 && e.t1.tj, e.insert ? [e.kind, e.geo.x, e.geo.y, e.newW] : 0])) : '');
   const previewCache = new Map();
   /** A pdf.js document holding just this page with its text edits applied (for on-screen rendering). */
   function getEditedProxy(pg) {
-    const key = pg.src + ':' + pg.index + ':' + editsKey(pg);
+    const key = pg.src + ':' + pg.index + ':' + (pg.src == null ? pg.w + 'x' + pg.h + ':' : '') + editsKey(pg);
     if (previewCache.has(key)) { const v = previewCache.get(key); previewCache.delete(key); previewCache.set(key, v); return v; }
     const edits = JSON.parse(JSON.stringify(pg.textEdits || []));
     const pr = (async () => {
       const L = root.PDFLib; const s = sources[pg.src];
-      await analyzePage(pg.src, pg.index);
       const d = await L.PDFDocument.create();
-      const [cp] = await d.copyPages(s.libDoc, [pg.index]);
-      const page = d.addPage(cp);
-      await applyTextEditsToPage(d, page, edits, s.simFonts && s.simFonts[pg.index], docFontLoader(d), pg.shifts, pg.shifts && pg.shifts.length ? (await pageGeometry(pg.src, pg.index)).boxes : null);
+      let page, fl = { inserts: [], tail: '' };
+      if (pg.src == null || !s) { page = d.addPage([pg.w, pg.h]); if (pg.incoming && pg.incoming.length) fl = await drawIncoming(d, page, pg.incoming, {}, null); }
+      else {
+        await analyzePage(pg.src, pg.index);
+        const [cp] = await d.copyPages(s.libDoc, [pg.index]);
+        page = d.addPage(cp);
+        if (pg.incoming && pg.incoming.length) fl = await drawIncoming(d, page, pg.incoming, {}, pg);
+        await applyTextEditsToPage(d, page, edits, s.simFonts && s.simFonts[pg.index], docFontLoader(d), pg.shifts, pg.shifts && pg.shifts.length ? (await pageGeometry(pg.src, pg.index)).boxes : null, await dropsFor(pg), fl.inserts);
+      }
+      appendTail(d, page, fl.tail);
       if (d.__folioIndic) d.__folioIndic.finalize();
       const bytes = await d.save();
       return pdfjsLib.getDocument({ data: bytes, cMapUrl: BASE + 'vendor/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: BASE + 'vendor/pdfjs/standard_fonts/', isEvalSupported: false, verbosity: pdfjsLib.VerbosityLevel ? pdfjsLib.VerbosityLevel.ERRORS : 0 }).promise;
@@ -2303,7 +2478,7 @@
     if (src == null || !p.sources[src]) return false;
     if (p.pages.length !== p.sources[src].pdf.numPages) return false;
     return p.pages.every((pg, i) => pg.src === src && pg.index === i && !(((pg.rot || 0) % 360 + 360) % 360) &&
-      !(pg.annots && pg.annots.length) && !(pg.textEdits && pg.textEdits.length) && !(pg.shifts && pg.shifts.length));
+      !(pg.annots && pg.annots.length) && !(pg.textEdits && pg.textEdits.length) && !(pg.shifts && pg.shifts.length) && !hasFlow(pg));
   }
 
   async function exportPdf(p) {
@@ -2389,6 +2564,7 @@
       return img;
     }
 
+    const flowTaken = {}, flowCache = {}, flowPages = [];
     for (let i = 0; i < p.pages.length; i++) {
       const pg = p.pages[i];
       const total = ((pg.baseRot || 0) + (pg.rot || 0)) % 360;
@@ -2400,14 +2576,19 @@
         page.setRotation(degrees(total));
         box = page.getCropBox();
         rotForMatrix = total;
-        if (((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length)) && p.sources[pg.src].libDoc) {
+        if (((pg.textEdits && pg.textEdits.length) || (pg.shifts && pg.shifts.length) || hasFlow(pg)) && p.sources[pg.src].libDoc) {
           await analyzePage(pg.src, pg.index);
-          await applyTextEditsToPage(out, page, pg.textEdits || [], p.sources[pg.src].simFonts && p.sources[pg.src].simFonts[pg.index], editFonts, pg.shifts, pg.shifts && pg.shifts.length ? (await pageGeometry(pg.src, pg.index)).boxes : null);
+          const fl = pg.incoming && pg.incoming.length ? await drawIncoming(out, page, pg.incoming, flowCache, pg) : { inserts: [], tail: '' };
+          const taken = await applyTextEditsToPage(out, page, pg.textEdits || [], p.sources[pg.src].simFonts && p.sources[pg.src].simFonts[pg.index], editFonts, pg.shifts, pg.shifts && pg.shifts.length ? (await pageGeometry(pg.src, pg.index)).boxes : null, await dropsFor(pg), fl.inserts);
+          appendTail(out, page, fl.tail);
+          if (taken && taken.length) flowTaken[pg.src + ':' + pg.index] = (flowTaken[pg.src + ':' + pg.index] || []).concat(taken);
+          if (pg.incoming && pg.incoming.length) flowPages.push({ page, list: pg.incoming });
         }
       } else {
         page = out.addPage([Dw, Dh]);
         box = { x: 0, y: 0, width: Dw, height: Dh };
         rotForMatrix = 0;
+        if (pg.incoming && pg.incoming.length) { appendTail(out, page, (await drawIncoming(out, page, pg.incoming, flowCache, null)).tail); flowPages.push({ page, list: pg.incoming }); }
       }
       if (!pg.annots || !pg.annots.length) continue;
 
@@ -2490,6 +2671,7 @@
       page.pushOperators(popGraphicsState());
     }
 
+    for (const fp of flowPages) placeIncomingAnnots(out, fp.page, fp.list, flowTaken);
     out.setTitle(p.title || 'Edited document');
     out.setProducer('Pdfroo PDF editor (pdf-lib)');
     out.setCreator('Pdfroo');
@@ -2503,6 +2685,51 @@
   /* ---------------- "Add like this" + reflow (Phase 1: same page) ---------------- */
   const RF = () => root.FolioReflow;
   const geoCache = new Map();
+  /** Running headers / footers: lines repeated at the same place (digits aside, e.g. a page number) on the page before or after. */
+  const furnCache = new Map();
+  async function furnitureIds(pg) {
+    const out = new Set();
+    if (!pg || pg.src == null || !sources[pg.src] || !sources[pg.src].libDoc) return out;
+    const key = pg.src + ':' + pg.index; if (furnCache.has(key)) return furnCache.get(key);
+    const n = sources[pg.src].libDoc.getPageCount();
+    const an = await analyzePage(pg.src, pg.index), view = an.page.view, H = view[3] - view[1];
+    const norm = (t) => String(t).replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+    for (const k of [pg.index - 1, pg.index + 1]) {
+      if (k < 0 || k >= n) continue;
+      let ao; try { ao = await analyzePage(pg.src, k); } catch (e) { continue; }
+      const v2 = ao.page.view; if (v2.some((v, j) => Math.abs(v - view[j]) > 0.5)) continue;
+      for (const l of an.lines) {
+        if (!String(l.text).trim() || !(l.y < view[1] + 0.12 * H || l.y > view[3] - 0.1 * H)) continue;
+        if (ao.lines.some((m) => Math.abs(m.y - l.y) < 1 && Math.abs(m.size - l.size) < 0.3 && (Math.abs(m.x - l.x) < 2 || Math.abs(m.x + m.width - l.x - l.width) < 2) && norm(m.text) === norm(l.text))) out.add(l.id);
+      }
+    }
+    // a centred footer block at the very bottom (address / contact line), set off from the body by a gap: stays on its page
+    {
+      const W = view[2] - view[0], cx = (view[0] + view[2]) / 2;
+      const ls = an.lines.filter((l) => String(l.text).trim() && !l.vertical);
+      const body = median(ls.map((l) => l.size)) || 10;
+      const rowsB = [];
+      for (const l of ls.slice().sort((p, q) => p.y - q.y)) {
+        const r = rowsB.find((q) => Math.abs(q.y - l.y) < 0.4 * Math.min(q.size, l.size));
+        if (r) { r.lines.push(l); r.x0 = Math.min(r.x0, l.x); r.x1 = Math.max(r.x1, l.x + l.width); r.size = Math.max(r.size, l.size); }
+        else rowsB.push({ y: l.y, size: l.size, lines: [l], x0: l.x, x1: l.x + l.width });
+      }
+      rowsB.sort((p, q) => p.y - q.y);
+      const grp = [];
+      for (const r of rowsB) {
+        if (r.y > view[1] + 0.1 * H) break;
+        const centred = Math.abs((r.x0 + r.x1) / 2 - cx) < 0.03 * W && r.x1 - r.x0 < 0.9 * W && r.size <= 1.05 * body;
+        if (!centred || (grp.length && r.y - grp[grp.length - 1].y > 2.2 * r.size)) break;
+        grp.push(r);
+      }
+      if (grp.length) {
+        const top = grp[grp.length - 1], above = rowsB[rowsB.indexOf(top) + 1];
+        if (!above || above.y - top.y > 2.2 * Math.max(top.size, above.size)) grp.forEach((r) => r.lines.forEach((l) => out.add(l.id)));
+      }
+    }
+    furnCache.set(key, out);
+    return out;
+  }
   /** Probe box used to decide whether text is inside a moved region: same rule for a show op and for a whole line. */
   const showBox = (sh) => { const sz = Math.abs(sh.m[3]) || sh.Tfs || 10; const a = sh.start[0], b = (sh.inkEnd || sh.end || sh.start)[0]; return [Math.min(a, b), sh.start[1] - 0.25 * sz, Math.max(a, b), sh.start[1] + 0.8 * sz]; };
   const showRotated = (sh) => Math.abs(sh.m[1]) > 0.02 * Math.abs(sh.m[0] || 1) || Math.abs(sh.m[2]) > 0.02 * Math.abs(sh.m[3] || 1) || (sh.m[0] || 0) <= 0 || (sh.m[3] || 0) <= 0;
@@ -2570,7 +2797,7 @@
         sim[k] = Object.assign({}, f, { widths: w, defaultWidth: (f.defaultWidth || 0) * sc });
       }
     }
-    g.texts = [];
+    g.texts = []; g.sim = sim;
     try {
       g.boxes = {};
       for (const sh of T.simulate(ops, sim)) {
@@ -2584,7 +2811,15 @@
     return g;
   }
   /** Font plan for NEW text in the style of line ln: original font (tier 1) when every glyph is there, else the line's tier 2/3 substitute. */
-  async function fontPlanFor(an, ln, text) {
+  /** The letter / word spacing (Tc, Tw in user space) the line's own text runs use, or null. */
+  function srcSpacing(an, ln) {
+    const sh = lineShows(an.shows.filter((x) => !x.form), ln).find((x) => x.tcU != null);
+    if (!sh) return null;
+    const r = (v) => (Math.abs(v) < 1e-4 ? 0 : Math.round(v * 10000) / 10000);
+    const sp = { tc: r(sh.tcU), tw: r(sh.twU) };
+    return sp.tc || sp.tw ? sp : null;
+  }
+  async function fontPlanFor(an, ln, text, keepSp) {
     if (!text.trim()) return { w: 0, tier: 0, label: '' };
     if (hasIndic(text) || COMPLEX_SCRIPT_RE.test(text.replace(INDIC_STRIP_RE, ''))) return null;
     let t1 = ln.removal === 'stream' ? tier1Plan(an, ln, text) : null;
@@ -2606,16 +2841,28 @@
       break;
     }
     if (!t1 && !sub) return null;
-    return { t1, sub, w, tier: t1 ? 1 : sub.tier, label: t1 ? 'Original font: ' + ln.fontLabel : 'Substituted font: ' + sub.label };
+    // lines made by "Add like this" / wraps keep the source line's Tc / Tw (original font only; Tw needs a 1-byte font)
+    let sp = null;
+    if (keepSp && t1) {
+      sp = srcSpacing(an, ln);
+      if (sp) {
+        const lf = an.libFonts && an.libFonts[t1.key], two = !!(lf && lf.composite);
+        let nG = 0, nSp = 0;
+        try { for (const op of TI().parseOps(t1.tj)) for (const a of op.args) for (const it of (a.t === 'arr' ? a.items : [a])) if (it.bytes) { nG += two ? it.bytes.length / 2 : it.bytes.length; if (!two) nSp += it.bytes.filter((b) => b === 32).length; } } catch (e) { nG = Array.from(text).length; }
+        if (two) sp = Object.assign({}, sp, { tw: 0 });
+        w += sp.tc * nG + (sp.tw || 0) * nSp;
+      }
+    }
+    return { t1, sub, w, sp, tier: t1 ? 1 : sub.tier, label: t1 ? 'Original font: ' + ln.fontLabel : 'Substituted font: ' + sub.label };
   }
   /** Greedy word wrap: widths[k] is the room for line k (the last value repeats). */
-  async function wrapText(an, ln, text, widths) {
+  async function wrapText(an, ln, text, widths, keepSp) {
     const words = text.replace(/\s+/g, ' ').trim().split(' ');
     const out = []; let cur = '';
     const room = (k) => widths[Math.min(k, widths.length - 1)];
     for (const w of words) {
       const cand = cur ? cur + ' ' + w : w;
-      const p = await fontPlanFor(an, ln, cand);
+      const p = await fontPlanFor(an, ln, cand, keepSp);
       if (!p) return null;
       if (!cur || p.w <= room(out.length) + 0.25) cur = cand;
       else { out.push(cur); cur = w; }
@@ -2628,7 +2875,9 @@
   function currentLines(an, pg) {
     const edits = pg.textEdits || [];
     const out = [];
+    const dropped = pg.drops && pg.drops.length ? dropSets(pg).lines : null;
     for (const ln of an.lines) {
+      if (dropped && dropped.has(ln.id)) continue;
       const e = edits.find((x) => x.lineId === ln.id);
       const mv = e && e.move ? e.move : { dx: 0, dy: e ? 0 : lineShift(pg, ln) };
       const w = e && !e.moveOnly && e.newW != null ? Math.max(1, e.newW) : ln.width;
@@ -2640,6 +2889,8 @@
       out.push(Object.assign({}, src, { id: e.lineId, x: e.geo.x + mv.dx, y: e.geo.y + mv.dy, width: e.newW || 0, size: e.geo.size, asc: e.geo.asc, desc: e.geo.desc, text: e.kind === 'clone' ? (src.text || '•') : e.text,
         bullet: e.kind === 'clone', inserted: true, edit: e, orig: null, movable: false, editable: e.kind !== 'clone' }));
     }
+    for (const inc of pg.incoming || []) for (const l of inc.lines || [])
+      out.push(Object.assign({}, l, { id: 'flow:' + inc.src + ':' + inc.index + ':' + l.id, x: l.x + (inc.dx || 0), y: l.y + (inc.dy || 0), flowed: true, edit: null, orig: null, movable: false, editable: false }));
     return out;
   }
   const lineBox = (l) => [l.x, l.y + (l.desc != null ? l.desc : -0.22) * l.size, l.x + Math.max(l.width, 0.3 * l.size), l.y + (l.asc != null ? l.asc : 0.78) * l.size];
@@ -2679,8 +2930,36 @@
     const trow = tight.find((r) => r.lines.some((l) => l.id === anchorId));
     if (!trow) return null;
     const sz = trow.size, view = an.page.view;
-    const yLo = Math.max(view[1], trow.y - 45 * sz), yHi = trow.y + 15 * sz;
+    let yLo = Math.max(view[1], trow.y - 45 * sz), yHi = trow.y + 15 * sz;
+    // XY-cut: gutters are looked for inside the horizontal band around the anchor, between full-width whitespace gaps
+    // (>= 1 line height) or page-wide rules; a band with fewer than 4 rows falls back to the window around the anchor
+    {
+      const W = view[2] - view[0];
+      const rs = tight.filter((r) => r.y <= yHi && r.y >= yLo).sort((p, q) => q.top - p.top);
+      const cuts = [];
+      let low = Infinity;
+      for (const r of rs) { if (low !== Infinity && low - r.top >= 1.2 * sz) cuts.push((low + r.top) / 2); low = Math.min(low, r.bottom); }
+      if (geo && geo.scan) for (const it of geo.scan.items) if (it.kind === 'path' && it.painted && !it.clip && it.bbox[2] - it.bbox[0] >= 0.8 * W && it.bbox[3] - it.bbox[1] <= 3) cuts.push((it.bbox[1] + it.bbox[3]) / 2);
+      const bHi = Math.min(yHi, ...cuts.filter((c) => c > trow.top)), bLo = Math.max(yLo, ...cuts.filter((c) => c < trow.bottom));
+      if ((bHi < yHi || bLo > yLo) && tight.filter((r) => r.y <= bHi && r.y >= bLo).length >= 4) { yLo = bLo; yHi = bHi; }
+    }
     let gut = RF().columnGutters(tight, yLo, yHi, Math.max(8, 0.9 * sz));
+    // narrow gutters (< 8 pt) count only where 3+ rows start at the same x right after the gap; the minimum gap is sized
+    // from the median word gap so ordinary word spaces never qualify
+    {
+      const wg = [];
+      for (const r of tight) { const ls = r.lines.slice().sort((p, q) => p.x - q.x); for (let k = 1; k < ls.length; k++) { const d = ls[k].x - (ls[k - 1].x + ls[k - 1].width); if (d > 0) wg.push(d); } }
+      const minGap = Math.max(2, 1.6 * Math.min(median(wg) || 0.28 * sz, 0.35 * sz));
+      if (minGap < Math.max(8, 0.9 * sz)) {
+        const rs = tight.filter((r) => r.y <= yHi && r.y >= yLo);
+        for (const g of RF().columnGutters(tight, yLo, yHi, minGap)) {
+          if (gut.some((h) => h.a < g.b && h.b > g.a)) continue;
+          const starts = rs.filter((r) => r.lines.some((l) => Math.abs(l.x - g.b) < 1)).length;
+          if (starts >= 3) gut.push(Object.assign({}, g, { narrow: true }));
+        }
+        gut.sort((p, q) => p.a - q.a);
+      }
+    }
     // a strip that single text runs cross (a LaTeX "title …… date" line is one TJ) is a tab gap, not a column gutter
     if (geo && geo.texts) gut = gut.filter((g) => geo.texts.filter((t) => !t.rot && t.box[1] <= yHi && t.box[3] >= yLo && t.box[0] < g.a - 0.5 && t.box[2] > g.b + 0.5).length < 2);
     const splits = gut.map((g) => g.mid).concat(regionX ? [regionX.x0, regionX.x1] : []);
@@ -2713,8 +2992,15 @@
     const i = col.indexOf(row);
     // leading: baseline steps between same-size neighbours
     const steps = [];
-    for (let k = 1; k < col.length; k++) { const a = col[k - 1], b = col[k]; const d = a.y - b.y; if (Math.abs(a.size - b.size) < 0.1 * a.size && d > 0.6 * a.size && d < 1.7 * a.size) steps.push(d); }
-    const lead = median(steps.filter((d) => Math.abs(d - (median(steps) || d)) < 0.25 * sz)) || 1.2 * sz;
+    // (most common baseline step within 0.8-3.0 em, so 1.5 / double spacing is kept; else the font's line gap)
+    for (let k = 1; k < col.length; k++) { const a = col[k - 1], b = col[k]; const d = a.y - b.y; if (Math.abs(a.size - b.size) < 0.1 * a.size && d > 0.8 * a.size && d < 3.0 * a.size) steps.push(d); }
+    let lead = null;
+    if (steps.length) {
+      const cnt = new Map(); for (const d of steps) { const q = Math.round(d * 2) / 2; cnt.set(q, (cnt.get(q) || 0) + 1); }
+      const modeQ = [...cnt.entries()].sort((p, q) => q[1] - p[1] || p[0] - q[0])[0][0];
+      lead = median(steps.filter((d) => Math.abs(d - modeQ) <= 0.5)) || modeQ;
+    }
+    if (!lead) { const rl = row.lines && row.lines[0]; lead = rl && rl.asc != null && rl.desc != null && rl.asc - rl.desc > 0.9 ? Math.min(1.5, Math.max(1.1, (rl.asc - rl.desc) * 1.05)) * sz : 1.2 * sz; }
     const isStart = (r) => !!(r.bulletRun || r.inlineBullet);
     const gap = (a, b) => a.y - b.y;
     // bullet item containing the row
@@ -2752,6 +3038,154 @@
    * Plan "Add like this" without changing anything. mode: 'line' | 'bullet' | 'section'.
    * opts: { body (section's first line), region: { x0, x1 } (user-dragged column bounds, PDF x), wrapOf: lineId (wrap an edited line) }
    */
+  /* ---------------- Form XObject inlining (only the page being edited) ----------------
+   * A page that draws its text through `/Fm Do` (pdfpages, "import page" tools, some resume builders) is rewritten so the
+   * form's content sits directly in the page stream: `q <Matrix> cm <BBox> re W n <content> Q`. The form's resources are
+   * merged into a page-own copy of /Resources under prefixed names (X<n>_<name>), renamed in the content through the
+   * content tokenizer (operands of Tf, Do, gs, cs/CS, scn/SCN, sh, BDC, inline-image /CS only; strings never touched).
+   * Nested forms are inlined too (depth 8). Transparency groups that use SMask / blend modes / alpha are not inlined.
+   * The result is a new source (a copy of the file with only this page rewritten) that is used only if pdf.js renders the
+   * page pixel-identical; the page switches to it when an edit is applied, so Undo goes back to the original bytes. */
+  const normCache = new Map();
+  const RES_CAT = { Tf: 'Font', Do: 'XObject', gs: 'ExtGState', cs: 'ColorSpace', CS: 'ColorSpace', scn: 'Pattern', SCN: 'Pattern', sh: 'Shading', BDC: 'Properties' };
+  function inlinePageForms(doc, page) {
+    const L = root.PDFLib, T = root.FolioTextInternals, ctx = doc.context, f = T.fmt;
+    const N = (n) => L.PDFName.of(n);
+    const look = (v) => (v instanceof L.PDFRef ? ctx.lookup(v) : v);
+    const dictOf = (v) => { const o = look(v); return o instanceof L.PDFDict ? o : null; };
+    const nums = (v) => { const a = look(v); if (!(a instanceof L.PDFArray)) return null; const out = []; for (let i = 0; i < a.size(); i++) { const x = look(a.get(i)); out.push(x && x.asNumber ? x.asNumber() : NaN); } return out.every(Number.isFinite) ? out : null; };
+    const nameStr = (v) => { const o = look(v); return o instanceof L.PDFName ? o.decodeText ? o.decodeText() : String(o).slice(1) : null; };
+    const pageRes0 = page.node.Resources() || ctx.obj({});
+    // page-own copy of the resources (the dict may be inherited / shared with other pages)
+    const res = ctx.obj({});
+    for (const [k, v] of pageRes0.entries()) { const d = dictOf(v); if (d && k !== N('ProcSet')) { const c = ctx.obj({}); for (const [k2, v2] of d.entries()) c.set(k2, v2); res.set(k, c); } else res.set(k, v); }
+    let nForm = 0, nPre = 0;
+    const renamers = new Map();
+    const renameFor = (fres) => {
+      if (!fres || fres === pageRes0) return null;
+      if (renamers.has(fres)) return renamers.get(fres);
+      const pre = 'X' + (++nPre) + '_', map = {};
+      for (const cat of new Set(Object.values(RES_CAT))) {
+        const cd = dictOf(fres.get(N(cat))); if (!cd) continue;
+        let tgt = dictOf(res.get(N(cat))); if (!tgt) { tgt = ctx.obj({}); res.set(N(cat), tgt); }
+        map[cat] = {};
+        for (const [k, v] of cd.entries()) { const nm = String(k).slice(1), nn = pre + nm; tgt.set(N(nn), v); map[cat][nm] = nn; }
+      }
+      const fn = (cat, nm) => (map[cat] && map[cat][nm]) || null;
+      renamers.set(fres, fn);
+      return fn;
+    };
+    const fail = (m) => { const e = new Error(m); e.inlineFail = true; throw e; };
+    const formOf = (fres, nm) => { const xd = dictOf(fres && fres.get(N('XObject'))); const xo = xd ? look(xd.get(N(nm))) : null; return xo && xo.dict && nameStr(xo.dict.get(N('Subtype'))) === 'Form' ? xo : null; };
+    const usesTransparency = (str, fres, depth) => {
+      if (depth > 8) return true;
+      for (const op of T.parseOps(str)) {
+        const a0 = op.args[0];
+        if (op.op === 'gs' && a0 && a0.t === 'name') {
+          const g = dictOf((dictOf(fres && fres.get(N('ExtGState'))) || ctx.obj({})).get(N(a0.v))); if (!g) continue;
+          const sm = look(g.get(N('SMask'))); if (sm && nameStr(sm) !== 'None') return true;
+          let bm = look(g.get(N('BM'))); if (bm instanceof L.PDFArray) bm = look(bm.get(0)); if (bm && !['Normal', 'Compatible'].includes(nameStr(bm))) return true;
+          for (const k of ['CA', 'ca']) { const v = look(g.get(N(k))); if (v && v.asNumber && v.asNumber() < 1) return true; }
+        } else if (op.op === 'Do' && a0 && a0.t === 'name') {
+          const xd = dictOf(fres && fres.get(N('XObject'))); const xo = xd ? look(xd.get(N(a0.v))) : null;
+          if (xo && xo.dict && xo.dict.get(N('SMask'))) return true;
+          const fo = formOf(fres, a0.v);
+          if (fo && usesTransparency(T.bytesToLatin1(T.decodeStreamBytes(L, fo) || new Uint8Array()), dictOf(fo.dict.get(N('Resources'))) || fres, depth + 1)) return true;
+        }
+      }
+      return false;
+    };
+    const inlineForm = (xo, parentRes, depth) => {
+      if (depth > 8) fail('Form XObjects nested too deeply');
+      const d = xo.dict;
+      const fres = dictOf(d.get(N('Resources'))) || parentRes;
+      const raw = T.decodeStreamBytes(L, xo); if (!raw) fail('form content could not be decoded');
+      const content = T.bytesToLatin1(raw);
+      const grp = dictOf(d.get(N('Group')));
+      if (grp && nameStr(grp.get(N('S'))) === 'Transparency' && usesTransparency(content, fres, depth)) fail('transparency group');
+      const m = nums(d.get(N('Matrix'))) || [1, 0, 0, 1, 0, 0];
+      const bb = nums(d.get(N('BBox'))); if (!bb || bb.length !== 4) fail('form without a BBox');
+      const x0 = Math.min(bb[0], bb[2]), y0 = Math.min(bb[1], bb[3]);
+      nForm++;
+      return `\nq ${m.map(f).join(' ')} cm ${f(x0)} ${f(y0)} ${f(Math.abs(bb[2] - bb[0]))} ${f(Math.abs(bb[3] - bb[1]))} re W n\n${expand(content, fres, renameFor(fres), depth)}\nQ\n`;
+    };
+    function expand(str, fres, rename, depth) {
+      const reps = [];
+      for (const op of T.parseOps(str)) {
+        const a = op.args;
+        if (op.op === 'Do' && a[0] && a[0].t === 'name') { const fo = formOf(fres, a[0].v); if (fo) { reps.push({ s: op.s, e: op.e, text: inlineForm(fo, fres, depth + 1) }); continue; } }
+        if (!rename) continue;
+        if (op.op === 'ID') {     // inline image: a named colour space is a resource
+          for (let k = 0; k + 1 < a.length; k += 2) if (a[k].t === 'name' && (a[k].v === 'CS' || a[k].v === 'ColorSpace') && a[k + 1].t === 'name' && a[k + 1].s != null) { const nn = rename('ColorSpace', a[k + 1].v); if (nn) reps.push({ s: a[k + 1].s, e: a[k + 1].e, text: '/' + nn }); }
+          continue;
+        }
+        const cat = RES_CAT[op.op]; if (!cat) continue;
+        const nm = op.op === 'scn' || op.op === 'SCN' ? a[a.length - 1] : op.op === 'BDC' ? a[1] : a[0];
+        if (!nm || nm.t !== 'name' || nm.s == null) continue;
+        const nn = rename(cat, nm.v); if (nn) reps.push({ s: nm.s, e: nm.e, text: '/' + nn });
+      }
+      reps.sort((p, q) => q.s - p.s);
+      let out = str;
+      for (const r of reps) out = out.slice(0, r.s) + r.text + out.slice(r.e);
+      return out;
+    }
+    const src = T.contentString(L, page);
+    const out = expand(src, pageRes0, null, 0);
+    if (!nForm) return 0;
+    page.node.set(N('Resources'), res);
+    page.node.set(N('Contents'), ctx.register(ctx.flateStream(T.latin1ToBytes(out))));
+    return nForm;
+  }
+  async function renderPixels(pdf, index, scale) {
+    const page = await pdf.getPage(index + 1);
+    const vp = page.getViewport({ scale, rotation: 0 });
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.floor(vp.width)); c.height = Math.max(1, Math.floor(vp.height));
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp, background: 'rgba(255,255,255,1)' }).promise;
+    return ctx.getImageData(0, 0, c.width, c.height).data;
+  }
+  /** { src } of a copy of the file with this page's Form XObjects inlined (pixel-verified), or { fail }. Cached. */
+  function normalizedSource(src, index) {
+    const key = src + ':' + index;
+    if (normCache.has(key)) return normCache.get(key);
+    const pr = (async () => {
+      const S = sources[src];
+      if (!S || !S.libDoc) return { fail: 'no document' };
+      const L = root.PDFLib;
+      let bytes;
+      try {
+        const d = await L.PDFDocument.load(S.bytes.slice(0), { updateMetadata: false });
+        if (!inlinePageForms(d, d.getPage(index))) return { fail: 'none' };
+        bytes = await d.save({ useObjectStreams: false });
+      } catch (e) { return { fail: (e && e.message) || 'inline failed' }; }
+      let ld;
+      try { ld = await load(bytes, S.name); } catch (e) { return { fail: 'reload failed' }; }
+      const drop = () => { try { sources[ld.src].pdf.destroy(); } catch (e) { /* ignore */ } delete sources[ld.src]; };
+      try {
+        const scale = 1.5 * Math.min(2, (root.devicePixelRatio || 1));
+        const [a, b] = [await renderPixels(S.pdf, index, scale), await renderPixels(sources[ld.src].pdf, index, scale)];
+        let diff = a.length !== b.length ? 1 : 0;
+        for (let i = 0; !diff && i < a.length; i++) if (a[i] !== b[i]) diff++;
+        if (diff) { drop(); return { fail: 'pixels' }; }
+      } catch (e) { drop(); return { fail: 'verify failed' }; }
+      sources[ld.src].normalizedFrom = { src, index };
+      return { src: ld.src };
+    })();
+    normCache.set(key, pr);
+    return pr;
+  }
+  const pristinePage = (pg) => !(pg.textEdits && pg.textEdits.length) && !(pg.shifts && pg.shifts.length) && !hasFlow(pg);
+  /** The same line in another analysis of the page (same text, same place). */
+  async function mapLineId(an, src2, index, id) {
+    const a2 = await analyzePage(src2, index);
+    const l = an.lines.find((x) => x.id === id); if (!l) return id;
+    const same = a2.lines.find((x) => x.id === id && x.text === l.text && Math.abs(x.x - l.x) < 0.5 && Math.abs(x.y - l.y) < 0.5);
+    if (same) return id;
+    const m = a2.lines.find((x) => x.text === l.text && Math.abs(x.x - l.x) < 0.5 && Math.abs(x.y - l.y) < 0.5);
+    return m ? m.id : id;
+  }
+
   async function planInsert(state, pageIndex, anchorId, mode, text, opts) {
     opts = opts || {};
     const pg = state.pages[pageIndex];
@@ -2760,6 +3194,18 @@
     if (totalRotation(pg)) return no('Rotate the page back to upright first — adding lines works on upright pages.');
     const an = await analyzePage(pg.src, pg.index);
     if (!an.lines.length || (an.refusal && an.refusal.code === 'ocr')) return no('Adding lines needs real text, and this page has none: ' + ((an.refusal && an.refusal.message) || 'there’s no text layer.'), { refused: an.refusal ? an.refusal.code : 'empty' });
+    // text drawn through a Form XObject: plan on a copy of the page with the forms inlined (pixel-verified)
+    if (!opts._norm && pristinePage(pg) && an.shows.some((x) => x.form)) {
+      const nz = await normalizedSource(pg.src, pg.index);
+      if (nz.src) {
+        const st2 = Object.assign({}, state, { pages: state.pages.slice() });
+        st2.pages[pageIndex] = Object.assign({}, pg, { src: nz.src });
+        const id2 = await mapLineId(an, nz.src, pg.index, anchorId);
+        const p2 = await planInsert(st2, pageIndex, id2, mode, text, Object.assign({}, opts, { _norm: true }));
+        if (p2 && typeof p2 === 'object') p2.normalize = { src: nz.src, from: pg.src };
+        return p2;
+      }
+    }
     const geo = await pageGeometry(pg.src, pg.index);
     const view = an.page.view;
     const cur = currentLines(an, pg);
@@ -2767,6 +3213,14 @@
     if (!la) return no('That line could not be found.');
     const { rows, row, st } = la;
     const { col, lead } = st;
+    // wrapped lines of one paragraph / bullet: the smallest baseline step that recurs in the column (inside a unit), not
+    // the step between items
+    const wrapLead = (() => {
+      const c = new Map();
+      for (let k = 1; k < col.length; k++) { const a = col[k - 1], b = col[k], d = a.y - b.y; if (Math.abs(a.size - b.size) < 0.1 * a.size && d > 0.8 * a.size && d < 3 * a.size) { const q = Math.round(d * 2) / 2; c.set(q, (c.get(q) || 0) + 1); } }
+      const qs = [...c.entries()].filter(([q, n]) => n >= 2 && q <= lead + 0.25).map(([q]) => q).sort((p, q) => p - q);
+      return qs.length ? Math.min(lead, qs[0]) : lead;
+    })();
     // "line below" a right-hand date / place that sits in its own strip: the line goes under the title next to it
     if (mode === 'line' && !opts._redir && !opts.region && !st.item && String(row.text).length <= 40 && row.x0 > (view[0] + view[2]) / 2) {
       const left = rows.filter((r) => r !== row && !col.includes(r) && Math.abs(r.y - row.y) < 0.4 * row.size && r.x1 < row.x0 - row.size && r.lines.some((l) => !l.bullet)).sort((p, q) => p.x0 - q.x0)[0];
@@ -2843,14 +3297,24 @@
         const labelStart = (r) => { const ls = r.lines.filter((l) => !l.bullet); return ls.length >= 2 && !!ls[0].bold && !ls[1].bold && /:\s*$/.test(String(ls[0].text)); };
         const maxR = Math.max(...col.filter((r) => Math.abs(r.size - row.size) < 0.15 * row.size).map((r) => r.x1));
         const contX = (q) => Math.abs(q.x0 - row.x0) < 1.5 || Math.abs(q.x0 - row.textX) < 1.5 || (labelStart(row) && q.x0 > row.x0 && q.x0 < row.lines[1].x + 1.5);
+        // a line ends its paragraph when the next line's first word would have fitted on it (a voluntary break)
+        // short list entries (Skills: "GST filing" / "Payroll processing"): a capitalised next line after a line that stops
+        // well short of the column and doesn't end mid-phrase is a new entry
+        const listLike = (a, q) => /^[A-Z]/.test(String(q.text || '').trim()) && a.x1 < maxR - 2 * row.size && !/(,|;|-|–|&|\band|\bor|\bof|\bthe|\bwith|\bfor|\bto|\bin)\s*$/i.test(String(a.text || '').trim());
+        const wordFits = (a, q) => {
+          const t = String(q.text || '').trim(), w0 = t.split(/\s+/)[0] || '';
+          if (!w0 || !t.length) return false;
+          const perCh = (q.x1 - q.x0) / Math.max(1, Array.from(t).length);
+          return a.x1 + 0.28 * q.size + perCh * Array.from(w0).length < maxR - 0.5;
+        };
         while (e + 1 < col.length) {
           const q = col[e + 1], g = col[e].y - q.y;
-          if (isStartRow(q) || labelStart(q) || !!q.bold !== !!row.lines[row.lines.length - 1].bold || g > 1.25 * lead || g < 0.5 * lead || Math.abs(q.size - row.size) >= 0.1 * row.size || !contX(q) || col[e].x1 < maxR - 8 * row.size) break;
+          if (isStartRow(q) || labelStart(q) || !!q.bold !== !!row.lines[row.lines.length - 1].bold || g > 1.25 * lead || g < 0.5 * lead || Math.abs(q.size - row.size) >= 0.1 * row.size || !contX(q) || wordFits(col[e], q) || listLike(col[e], q)) break;
           e++;
         }
         anchorRow = col[e]; if (e > i0) xCont = col[i0 + 1].x0;
         const nx = col[nextBelow(e)];
-        if (nx && Math.abs(nx.size - row.size) < 0.1 * row.size && nx.x0 <= row.x0 + 1.5 && nx.x0 >= row.x0 - 1.5) { const g = anchorRow.y - nx.y; if (g > 1.08 * lead && g < 2.6 * lead) firstGap = g; }
+        if (nx && Math.abs(nx.size - row.size) < 0.1 * row.size && nx.x0 <= row.x0 + 1.5 && nx.x0 >= row.x0 - 1.5) { const g = anchorRow.y - nx.y; if (g > 1.08 * lead && g < 2.6 * lead) firstGap = g; else if (g >= 0.8 * row.size && g <= 1.08 * lead) firstGap = g; }   // the step to the next sibling, not the page's most common step
         if (labelStart(row)) xCont = e > i0 ? col[i0 + 1].x0 : row.x0;
       }
     } else return no('Unknown kind of line.');
@@ -2886,17 +3350,17 @@
         const gapLR = Math.max(0.22 * ls.restSrc.size, ls.restSrc.x - (ls.labelSrc.x + lsw.w));
         const xr = xFirst + lw.w + gapLR;
         const cr = mode === 'section' ? colRFor(r) : colR;
-        const parts = ls.rest ? await wrapText(an, ls.restSrc, ls.rest, [cr - xr, cr - xNext]) : [];
+        const parts = ls.rest ? await wrapText(an, ls.restSrc, ls.rest, [cr - xr, cr - xNext], true) : [];
         if (!parts) return null;
         newRows.push({ y: y0, lines: [{ text: ls.label, x: xFirst, src: ls.labelSrc }].concat(parts.length ? [{ text: parts[0], x: xr, src: ls.restSrc }] : []) });
-        parts.slice(1).forEach((p, k) => newRows.push({ y: y0 - (k + 1) * lead, lines: [{ text: p, x: xNext, src: ls.restSrc }] }));
+        parts.slice(1).forEach((p, k) => newRows.push({ y: y0 - (k + 1) * wrapLead, lines: [{ text: p, x: xNext, src: ls.restSrc }] }));
         return parts.length || 1;
       }
       const full = (first ? prefix : '') + t;
       const cr = mode === 'section' ? colRFor(r) : colR;
-      const parts = await wrapText(an, src, full, [cr - xFirst, cr - xNext]);
+      const parts = await wrapText(an, src, full, [cr - xFirst, cr - xNext], true);
       if (!parts) return null;
-      parts.forEach((p, k) => newRows.push({ y: y0 - k * lead, lines: [{ text: p, x: k ? xNext : xFirst, src }] }));
+      parts.forEach((p, k) => newRows.push({ y: y0 - k * wrapLead, lines: [{ text: p, x: k ? xNext : xFirst, src }] }));
       return parts.length;
     };
     const typed = String(text || '').replace(/[\r\n\t]+/g, ' ').trim();
@@ -2919,21 +3383,21 @@
     if (mode === 'section') {
       n = await layoutPara(headRow, typed, y1, x, x, true);
       if (n == null) return no(noFontMsg);
-      height += (n - 1) * lead;
+      height += (n - 1) * wrapLead;
       const body = String(opts.body || '').replace(/[\r\n\t]+/g, ' ').trim();
       if (body && bodyRow) {
         const hb = headRow.y - bodyRow.y;
-        const yb = y1 - (n - 1) * lead - hb;
+        const yb = y1 - (n - 1) * wrapLead - hb;
         // continuation lines align with the body text (not with a date / label column to its left)
         const nb = await layoutPara(bodyRow, body, yb, bodyRow.textX, bodyRow.bulletRun || bodyRow.inlineBullet ? bodyRow.textX : (labelSplit(bodyRow, body) ? bodyRow.x0 : bodyRow.textX), true);
         if (nb == null) return no(noFontMsg);
-        height += hb + (nb - 1) * lead;
+        height += hb + (nb - 1) * wrapLead;
         if (bodyRow.bulletRun) newRows[newRows.length - nb].clone = { src: bodyRow.bulletRun, x: bodyRow.bulletRun.x };
       }
     } else {
       n = await layoutPara(srcRow, typed, y1, x, xCont, true);
       if (n == null) return no(noFontMsg);
-      height += (n - 1) * lead;
+      height += (n - 1) * wrapLead;
       if (cloneBullet) newRows[0].clone = { src: cloneBullet, x: cloneBullet.x };
       if (inlineMarker) newRows[0].lines.unshift(inlineMarker);
     }
@@ -2949,7 +3413,7 @@
     // spanners: rows / paths below the cut that cross the column edges -> everything below them moves too
     const crosses = (bb) => (bb[0] < st.x0 - 1 && bb[2] > st.x0 + 1) || (bb[0] < st.x1 - 1 && bb[2] > st.x1 + 1);
     const W = view[2] - view[0], H = view[3] - view[1];
-    const geoItems = geo.scan.items.map((it, k) => { const d = RF().shiftFor(it.bbox, pg.shifts); return { k, it, bb: [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d] }; });
+    const geoItems = geo.scan.items.map((it, k) => { const d = RF().itemShift(it, pg.shifts); return { k, it, bb: [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d] }; });
     // backgrounds / containers never move: page-size fills, full-height column or sidebar boxes (also one that only
     // holds this column's text, or a neighbouring sidebar that pokes a few points into this column)
     const isBackground = (bb) => {
@@ -2960,7 +3424,9 @@
       return ov < Math.max(8, 0.1 * (bb[2] - bb[0]));
     };
     let spanTop = null;
-    for (const r of rows) if (r.y < yCut && crosses([r.x0, 0, r.x1, 0])) spanTop = Math.max(spanTop == null ? -Infinity : spanTop, r.top + 0.5);
+    const furn = await furnitureIds(pg);
+    const isFurn = (r) => r.lines.length && r.lines.every((l) => furn.has(l.id));
+    for (const r of rows) if (r.y < yCut && !isFurn(r) && crosses([r.x0, 0, r.x1, 0])) spanTop = Math.max(spanTop == null ? -Infinity : spanTop, r.top + 0.5);
     for (const g of geoItems) {
       if (g.it.kind === 'shading' || (g.it.kind === 'path' && !g.it.painted) || isBackground(g.bb)) continue;
       if (g.bb[3] < yCut && crosses(g.bb) && g.bb[2] - g.bb[0] < 0.98 * W) spanTop = Math.max(spanTop == null ? -Infinity : spanTop, g.bb[3] + 0.5);
@@ -2983,12 +3449,19 @@
         maxGap = Math.max(maxGap, below[k - 1].y - below[k].y);
       }
     }
+    // a running footer (the same line at the same place on the next / previous page) stays put; content stops above it
+    const footRows = rows.filter((r) => r.y < yCut && isFurn(r) && r.y < view[1] + 0.12 * H);
+    const footTop = footRows.length ? Math.max(...footRows.map((r) => r.top)) : null;
+    if (footTop != null) rects.forEach((r) => { r.yBot = Math.max(r.yBot, footTop + 0.5); });
     const inR = (bb) => RF().inRegion(bb, rects, 1);
     // what moves
     // rotated / vertical text (margin labels, diagonal badges) is decoration: it stays where it is
     const rotLine = (l) => !l.inserted && (l.vertical || Math.abs(l.b || 0) > 0.02 * l.size || Math.abs(l.c || 0) > 0.02 * l.size);
     const moveLines = cur.filter((l) => !row.lines.includes(l) && !rotLine(l) && l.y < yCut && inR(probeBox(l)));
-    const moveGeo = geoItems.filter((g) => g.it.kind !== 'shading' && inR(g.bb));
+    // a clip-only path moves only when it really starts inside the region: a page-wide clip whose centre happens to fall
+    // in a full-width rect would otherwise move and cut off the header it also clips
+    const topIn = (g) => rects.some((r) => g.bb[0] >= r.x0 - 1 && g.bb[2] <= r.x1 + 1 && g.bb[3] <= r.yTop + RF().pathPoke(g.it));
+    const moveGeo = geoItems.filter((g) => g.it.kind !== 'shading' && inR(g.bb) && (g.it.kind !== 'path' || topIn(g)));
     const moveAnn = geo.annots.map((a) => { const d = RF().shiftFor(a.bbox, pg.shifts); return Object.assign({}, a, { bb: [a.bbox[0], a.bbox[1] + d, a.bbox[2], a.bbox[3] + d] }); }).filter((a) => inR(a.bb));
     const moveApp = (pg.annots || []).filter((a) => inR(appAnnotBox(a, view)));
     // safety: boxes / rules cut by the insertion point, locked text, clipping
@@ -3019,7 +3492,7 @@
       const c = g.it.clipAt; if (!c) continue;
       const clipItem = geoItems.find((h) => h.it.clip && h.it.i1 < g.it.i0 && Math.abs(h.it.bbox[0] - c[0]) < 0.5 && Math.abs(h.it.bbox[3] - c[3]) < 0.5);
       if (clipItem && movedGeoKeys.has(clipItem.k)) continue;
-      if (g.bb[1] + dy < c[1] - 1) conflicts.push({ kind: 'clip', bbox: g.bb, message: 'Part of the page below is clipped; moving it would hide it.' });
+      if (g.bb[1] + dy < c[1] - 1) conflicts.push({ kind: 'clip', clipBot: c[1], bbox: g.bb, message: 'Part of the page below is clipped; moving it would hide it.' });
     }
     // text runs: those in the region move in the content stream; a run that is only partly in it (e.g. a LaTeX line whose
     // left text and right-aligned date are one TJ across the column edge) can't, nor can one that would leave its clip
@@ -3027,7 +3500,7 @@
       const editedBoxes = cur.filter((l) => l.edit && l.orig && !l.inserted).map((l) => probeBox(l.orig));
       const owned = (bb) => editedBoxes.some((e) => bb[0] >= e[0] - 1 && bb[2] <= e[2] + 1 && Math.abs(bb[1] - e[1]) < 1);
       const clipMoves = (c) => geoItems.some((h) => h.it.clip && movedGeoKeys.has(h.k) && Math.abs(h.it.bbox[0] - c[0]) < 0.5 && Math.abs(h.it.bbox[1] - c[1]) < 0.5 && Math.abs(h.it.bbox[3] - c[3]) < 0.5);
-      let shared = null, stuck = null, clipped = null;
+      let shared = null, stuck = null, clipped = null, clipBot = -1e9;
       for (const t of geo.texts || []) {
         if (t.rot || owned(t.box)) continue;
         const d0 = RF().shiftFor(t.box, pg.shifts), bb = [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0];
@@ -3035,32 +3508,67 @@
         if (inR(bb)) {
           if (!t.movable) stuck = stuck || bb;
           const c = geo.scan.textClip[t.i];
-          if (c && bb[1] + dy < c[1] - 1 && c[3] - c[1] < 0.95 * H && !clipMoves(c)) clipped = clipped || bb;
+          if (c && bb[1] + dy < c[1] - 1 && c[3] - c[1] < 0.95 * H && !clipMoves(c)) { clipped = clipped || bb; clipBot = Math.max(clipBot, c[1]); }
         } else if (rects.some((r) => cy <= r.yTop && cy >= r.yBot && bb[2] > r.x0 + 1 && bb[0] < r.x1 - 1 && ((bb[0] < r.x0 - 1) || (bb[2] > r.x1 + 1)))) shared = shared || bb;
       }
       if (shared) conflicts.push({ kind: 'shared', bbox: shared, message: 'A line below runs across the column edge (its text is one piece), so it can’t be moved safely. Drag the column edges to include all of it, or add this lower down.' });
       if (stuck) conflicts.push({ kind: 'locked', bbox: stuck, message: 'Some text below can’t be moved cleanly, so nothing would be changed.' });
-      if (clipped) conflicts.push({ kind: 'clip', bbox: clipped, message: 'Some text below sits in a clipped area; moving it would hide it.' });
+      if (clipped) conflicts.push({ kind: 'clip', clipBot, bbox: clipped, message: 'Some text below sits in a clipped area; moving it would hide it.' });
     }
     // room on the page
     const topMargin = view[3] - Math.max(...rows.map((r) => r.top));
     const lowest = Math.min(...rows.map((r) => r.bottom), ...geoItems.filter((g) => g.it.painted !== false && g.it.kind !== 'shading' && !isBackground(g.bb)).map((g) => g.bb[1]));
     let bottomLimit = Math.min(view[1] + Math.max(18, Math.min(72, topMargin)), lowest);
+    // CSS multi-column flow (balanced columns): the right column's first line continues the left column (an indented
+    // continuation, not a heading), so the left column is full at its current bottom and continues at the top of the right one
+    let multi = null;
+    {
+      const inCol = (l, a, b) => l.x >= a - 1 && l.x + l.width <= b + 1;
+      const bodyL = (ls) => median(ls.map((l) => l.size)) || 10;
+      const detect = (Lc, Rc) => {
+        if (Lc.length < 4 || Rc.length < 3) return null;
+        const Lx0 = Math.min(...Lc.map((l) => l.x)), Lx1 = Math.max(...Lc.map((l) => l.x + l.width));
+        const Rx0 = Math.min(...Rc.map((l) => l.x)), Rx1 = Math.max(...Rc.map((l) => l.x + l.width));
+        const wl = Lx1 - Lx0, wr = Rx1 - Rx0;
+        if (Rx0 < Lx1 + 6 || Math.abs(wl - wr) > 0.2 * Math.max(wl, wr) || Rx1 < view[2] - 0.25 * W) return null;
+        if (Math.abs(Math.max(...Lc.map((l) => l.y)) - Math.max(...Rc.map((l) => l.y))) > 4 * lead) return null;
+        const first = Rc.slice().sort((p, q) => q.y - p.y)[0], b = bodyL(Rc);
+        if (first.bold || first.caps || first.size > 1.05 * b || first.bullet) return null;
+        const off = first.x - Rx0;
+        if (off < 2 || !Lc.some((l) => !l.bullet && Math.abs(l.x - Lx0 - off) < 1.5)) return null;
+        if (Rc.some((l) => Math.abs(l.y - first.y) < 0.4 * l.size && l.x < first.x - 1)) return null;    // something left of it on its row: not a continuation
+        const g2 = (Rx0 - Lx1) / 2;
+        return { L: [Lx0 - g2, Lx1 + g2 - 0.5], R: [Rx0 - g2 + 0.5, Math.min(view[2], Rx1 + g2)], dx: Rx0 - Lx0, split: (Lx1 + Rx0) / 2, Lbot: Math.min(...Lc.map((l) => lineBox(l)[1])) };
+      };
+      const all = cur.filter((l) => !rotLine(l) && !l.inserted && !l.flowed && String(l.text).trim());
+      const here = all.filter((l) => inCol(l, st.x0, st.x1));
+      // (pieces of a full-width row, e.g. a header line split into runs, belong to neither column)
+      const spanRow = (l, xe) => all.some((m) => m !== l && Math.abs(m.y - l.y) < 0.4 * l.size && m.x < xe - 1 && m.x + m.width > xe + 1);
+      const right = all.filter((l) => l.x >= st.x1 - 1 && !spanRow(l, st.x1));
+      const left = all.filter((l) => l.x + l.width <= st.x0 + 1 && !spanRow(l, st.x0));
+      multi = detect(here, right);
+      if (multi) { bottomLimit = Math.max(bottomLimit, multi.Lbot - 0.25); }
+      else { multi = detect(left, here); }
+    }
     // a container box (sidebar background, frame) around this text: what moves must stay inside it
     for (const g of geoItems) {
       const bb = g.bb;
       if (g.it.kind !== 'path' || !g.it.painted || (bb[3] - bb[1]) <= 0.4 * H || !(bb[0] <= row.x0 + 2 && bb[2] >= row.x1 - 2 && bb[3] >= row.top && bb[1] <= row.bottom)) continue;
       if (bb[1] > view[1] + 4) bottomLimit = Math.max(bottomLimit, Math.min(bb[1] + 4, row.bottom));
     }
-    const newBottom = Math.min(...newRows.map((r) => r.y - 0.25 * srcRow.size), ...moveLines.map((l) => lineBox(l)[1] + dy), ...moveGeo.map((g) => g.bb[1] + dy));
+    if (footTop != null) bottomLimit = Math.max(bottomLimit, footTop + 0.8 * lead);
+    const newBottom = Math.min(...newRows.map((r) => r.y - 0.25 * srcRow.size), ...moveLines.map((l) => lineBox(l)[1] + dy), ...moveGeo.filter((g) => g.it.kind !== 'path' || g.it.painted).map((g) => g.bb[1] + dy));
     const overflow = newBottom < bottomLimit - 0.5 ? Math.round((bottomLimit - newBottom) * 10) / 10 : 0;
+    // a clip whose bottom is at / below the bottom margin (the page's own content clip): what would leave it is past the
+    // margin anyway and carries on to the next page inside its own clip, so it isn't a reason to refuse
+    if (overflow) for (let k = conflicts.length - 1; k >= 0; k--) if (conflicts[k].kind === 'clip' && conflicts[k].clipBot != null && conflicts[k].clipBot <= bottomLimit + 1) conflicts.splice(k, 1);
     // preview geometry (display points)
     const disp = (bb) => ({ x: bb[0] - view[0], y: view[3] - bb[3], w: bb[2] - bb[0], h: bb[3] - bb[1] });
     const newLines = [];
     for (const r of newRows) {
       if (r.clone) newLines.push({ clone: true, srcId: r.clone.src.id, x: r.clone.x, y: r.y, size: r.clone.src.size, w: r.clone.src.width, text: r.clone.src.text });
       for (const l of r.lines) {
-        const fp = await fontPlanFor(an, l.src, l.text);
+        const fp = await fontPlanFor(an, l.src, l.text, true);
         newLines.push({ text: l.text, x: l.x, y: r.y, size: l.src.size, srcId: l.src.id, w: fp ? fp.w : 0, label: fp ? fp.label : '', color: l.src.color, bold: !!l.src.bold, italic: !!l.src.italic });
       }
     }
@@ -3089,8 +3597,68 @@
     const counts = { lines: moveLines.filter((l) => !l.bullet).length, bullets: moveLines.filter((l) => l.bullet).length, paths: moveGeo.filter((g) => g.it.kind === 'path' && g.it.painted).length, images: moveGeo.filter((g) => g.it.kind !== 'path').length, links: moveAnn.length, annots: moveApp.length };
     { const seen = new Set(); for (let k = conflicts.length - 1; k >= 0; k--) { const key = conflicts[k].kind + conflicts[k].bbox.map((v) => v.toFixed(1)).join(','); if (seen.has(key)) conflicts.splice(k, 1); else seen.add(key); } }
     const uniq = (boxes) => { const seen = new Set(); return boxes.filter((b) => { const key = [b.x, b.y, b.w, b.h].map((v) => v.toFixed(1)).join(','); if (seen.has(key)) return false; seen.add(key); return true; }); };
-    const ok = !conflicts.length && !overflow;
-    return {
+    // no room: the overflow carries on to the next column / page (Word-style) when it can
+    let flow = null, flowFail = '', flowCode = '', flowBox = null;
+    // "Keep on one page": a small overflow (<= ~8% of the column) can be absorbed by tightening only the gaps between the
+    // lines that move (baseline steps; font size, Tc, Tw and TJ untouched). Offered in the preview, never automatic.
+    let fit = null, fitOffer = false, fitFail = '';
+    if (overflow && !conflicts.length) {
+      const colTop = Math.max(...col.map((r) => (r.top != null ? r.top : r.y + r.size)));
+      const colH = colTop - bottomLimit;
+      fitOffer = colH > 0 && overflow <= 0.08 * colH;
+      if (fitOffer && opts.fit) {
+        const nb0 = Math.min(...newRows.map((r) => r.y - 0.25 * srcRow.size));
+        const units = [];
+        for (const l of moveLines.slice().sort((p, q) => q.y - p.y)) {
+          const b = lineBox(l);
+          const u = units.find((v) => Math.abs(v.y - l.y) < 0.4 * l.size);
+          if (u) { u.top = Math.max(u.top, b[3]); u.bot = Math.min(u.bot, b[1]); } else units.push({ y: l.y, top: b[3], bot: b[1] });
+        }
+        units.sort((p, q) => q.y - p.y);
+        const m = units.length, need = overflow + 0.5;
+        // gap i = baseline step above unit i (from the new line for i = 0); paragraph / section gaps shrink first, then
+        // line gaps, proportionally, never below 90% of the original step
+        const lastY = Math.min(...newRows.map((r) => r.y));
+        const steps = units.map((u, i) => (i === 0 ? lastY : units[i - 1].y + dy) - (u.y + dy));
+        const cap = steps.map((d) => Math.max(0, 0.1 * d));
+        const isPara = steps.map((d) => d > 1.25 * lead);
+        const capP = cap.reduce((a, c, i) => a + (isPara[i] ? c : 0), 0), capL = cap.reduce((a, c, i) => a + (isPara[i] ? 0 : c), 0);
+        const red = cap.map((c, i) => (isPara[i] ? (capP >= need ? c * need / capP : c) : (capP >= need ? 0 : c * Math.min(1, (need - capP) / (capL || 1)))));
+        const tallBox = moveGeo.some((g) => g.it.kind === 'path' && g.it.painted && !g.it.clip && g.bb[3] - g.bb[1] > 1.5 * lead);
+        if (nb0 < bottomLimit - 0.5) fitFail = 'the new line itself would be past the bottom margin.';
+        else if (!m || capP + capL < need) fitFail = 'the gaps between lines would have to shrink below 90% of their size.';
+        else if (tallBox) fitFail = 'a box that holds several lines moves with them, and tightening would pull its text out of it.';
+        else {
+          const shifts = [];
+          let C = 0;
+          const fitBot = Math.min(...units.map((u) => u.bot), ...moveGeo.filter((g) => g.it.kind !== 'path' || g.it.painted).map((g) => g.bb[1])) - 0.5;
+          for (let i = 0; i < m; i++) {
+            const r = Math.round(red[i] * 1000) / 1000;
+            if (r > 0) {
+              // bands in the page's coordinates before the insert's own shift (they're applied first), from the gap above
+              // unit i down to just under the lowest moving item, so footers / page numbers / boxes below never move
+              const top = units[i].top + C;
+              const yTop = i === 0 ? Math.min(top + 0.3 * lead, yCut) : (units[i - 1].bot + C + top) / 2;
+              shifts.push({ rects: rects.map((q) => ({ x0: q.x0, x1: q.x1, yTop: Math.min(yTop, q.yTop), yBot: fitBot })), dy: r, tol: 1 });
+            }
+            C += r;
+          }
+          const used = red.filter((r) => r > 0.0005);
+          fit = { shifts, gaps: used.length, paraGaps: red.filter((r, i) => r > 0.0005 && isPara[i]).length, gap: Math.round(Math.max(...used) * 10) / 10, total: Math.round(C * 10) / 10, rows: m };
+        }
+      }
+    }
+    if (overflow && !conflicts.length && !fit) {
+      const nb = Math.min(...newRows.map((r) => r.y - 0.25 * srcRow.size));
+      if (nb < bottomLimit - 0.5) flowFail = 'the new line itself would be past the bottom margin — add it at the top of the next page instead.';
+      else {
+        const f = await planFlow(state, pageIndex, { rect: rects, dy, limit: bottomLimit, lead, newBottom: nb, multi });
+        if (f.fail) { flowFail = f.fail.replace(/^./, (ch) => ch.toLowerCase()); flowCode = f.code; flowBox = f.bb; } else if (!f.steps || !f.steps.length) { flowFail = 'nothing below can be carried on to the next page.'; flowCode = 'empty'; } else flow = f;
+      }
+    }
+    const ok = !conflicts.length && (!overflow || !!flow || !!fit);
+    const flowInfo = flow ? flowSummary(flow, view, dy, pageIndex) : null;
+    const res = {
       ok, mode, pageIndex, anchorId, text: typed, body: opts.body || '', region: { x0: st.x0, x1: st.x1, yCut, rects, dyn: !!opts.region }, dy,
       lead, colRight: colR, uncertain, notes, conflicts: conflicts.slice(0, 6), overflow, bottomLimit,
       newLines, pathClones, counts, moving: { lines: moveLines.map((l) => l.id), geo: moveGeo.map((g) => g.k), annots: moveAnn.map((a) => a.i), app: moveApp.map((a) => a.id) },
@@ -3100,33 +3668,370 @@
         added: newLines.map((l) => disp([l.x, l.y - 0.22 * l.size, l.x + Math.max(l.w, l.size * 0.4), l.y + 0.78 * l.size])).concat(pathClones.map((p) => disp(p.bbox))),
         conflicts: conflicts.map((c) => disp(c.bbox)), gutters: st.gutters.map((g) => [g[0] - view[0], g[1] - view[0]]), page: { w: W, h: H },
       },
-      message: conflicts.length ? conflicts[0].message : overflow ? `There isn’t room for this on the page — it would push content ${Math.ceil(overflow)} pt past the bottom margin.` : '',
+      flowInfo, flowRefused: overflow && !flow && !fit && !conflicts.length ? flowFail : '', flowCode, flowBox,
+      fit, fitOffer: fitOffer && !fit, fitFail,
+      message: conflicts.length ? conflicts[0].message : overflow && !flow && !fit ? (opts.fit && fitFail ? `It can’t be kept on one page: ${fitFail}` : '') || `There isn’t room for this on the page (it would push content ${Math.ceil(overflow)} pt past the bottom margin), and it can’t carry on: ${flowFail || 'Pdfroo couldn’t move it safely.'}` : '',
     };
+    Object.defineProperty(res, 'flow', { value: flow, enumerable: false });
+    return res;
+  }
+
+  /**
+   * Word-style overflow: what an insert pushes past the bottom of its column carries on — to the next column on the page
+   * (CSS multi-column), else the same column on the next page (inserted at its top, pushing that page's column down, which can
+   * cascade), else a new page of the same size. Tables, boxes, clipped blocks and forms move whole; lines are never split; a
+   * heading never stays behind alone. Works on copies of the pages: { pages: Map(index -> page), newPage, steps, out } or { fail }.
+   */
+  async function planFlow(state, pageIndex, A) {
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    const clones = new Map();
+    let added = null;
+    const steps = [];
+    // the pages content may flow onto (up to +3) are unpacked too when their text is drawn through a Form XObject
+    // (pixel-verified copy; the page switches to it only if this flow is applied)
+    const unpacked = new Map();
+    for (let pi = pageIndex + 1; pi <= Math.min(state.pages.length - 1, pageIndex + 3); pi++) {
+      const p = state.pages[pi];
+      if (!p || p.src == null || !sources[p.src] || !sources[p.src].libDoc || !pristinePage(p) || totalRotation(p)) continue;
+      const anp = await analyzePage(p.src, p.index);
+      if (anp.refusal || !anp.shows.some((x) => x.form && x.Tr !== 3 && x.Tr !== 7)) continue;
+      const nz = await normalizedSource(p.src, p.index);
+      if (nz.src && sources[nz.src]) unpacked.set(pi, nz.src);
+    }
+    const clone = (pi) => {
+      if (added && pi === state.pages.length) return added;
+      if (!clones.has(pi)) {
+        const p = state.pages[pi];
+        clones.set(pi, Object.assign({}, p, unpacked.has(pi) ? { src: unpacked.get(pi) } : {}, { textEdits: (p.textEdits || []).slice(), shifts: (p.shifts || []).slice(), drops: (p.drops || []).slice(), incoming: (p.incoming || []).slice(), annots: JSON.parse(JSON.stringify(p.annots || [])) }));
+      }
+      return clones.get(pi);
+    };
+    const fail = (message, code, bb) => { const e = new Error(message); e.flow = code || 'flow'; e.bb = bb || null; throw e; };
+    const rotL = (l) => !l.inserted && !l.flowed && (l.vertical || Math.abs(l.b || 0) > 0.02 * l.size || Math.abs(l.c || 0) > 0.02 * l.size);
+    const ctxOf = async (P) => {
+      if (P.src == null || !sources[P.src] || !sources[P.src].libDoc) return null;
+      const an = await analyzePage(P.src, P.index), geo = await pageGeometry(P.src, P.index), view = an.page.view;
+      const ds = dropSets(P);
+      const furn = await furnitureIds(P), H0 = view[3] - view[1];
+      const all = currentLines(an, P).filter((l) => !rotL(l));
+      const cur = all.filter((l) => l.flowed || !furn.has(l.id)), furnL = all.filter((l) => !l.flowed && furn.has(l.id));
+      const foot = furnL.filter((l) => l.y < view[1] + 0.12 * H0);
+      const footTop = foot.length ? Math.max(...foot.map((l) => lineBox(l)[3])) : null;
+      const items = geo.scan.items.map((it, k) => { if (ds.items.has(k)) return null; const d = RF().itemShift(it, P.shifts); return { k, it, d, bb: [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d] }; }).filter(Boolean);
+      const texts = (geo.texts || []).filter((t) => !t.rot && !ds.shows.has(t.i)).map((t) => { const d = RF().shiftFor(t.box, P.shifts); return Object.assign({}, t, { d, bb: [t.box[0], t.box[1] + d, t.box[2], t.box[3] + d] }); });
+      const anns = geo.annots.filter((a) => !ds.annots.has(a.i)).map((a) => { const d = RF().shiftFor(a.bbox, P.shifts); return Object.assign({}, a, { d, bb: [a.bbox[0], a.bbox[1] + d, a.bbox[2], a.bbox[3] + d] }); });
+      return { an, geo, view, cur, furnL, footTop, items, texts, anns, W: view[2] - view[0], H: view[3] - view[1] };
+    };
+    const isBg = (c, bb, x0, x1) => (bb[3] - bb[1]) > 0.4 * c.H && ((bb[2] - bb[0]) > 0.5 * c.W || (bb[0] <= x0 + 2 && bb[2] >= x1 - 2) || Math.min(bb[2], x1) - Math.max(bb[0], x0) < Math.max(8, 0.1 * (bb[2] - bb[0])));
+    const solid = (g) => g.it.kind !== 'shading' && !(g.it.kind === 'path' && !g.it.painted);
+    const limitOf = (c, x0, x1) => {
+      const tops = c.cur.map((l) => lineBox(l)[3]);
+      const topMargin = tops.length ? c.view[3] - Math.max(...tops) : 36;
+      const lowest = Math.min(...c.cur.map((l) => lineBox(l)[1]), ...c.items.filter((g) => solid(g) && !isBg(c, g.bb, x0, x1)).map((g) => g.bb[1]));
+      let lim = Math.min(c.view[1] + Math.max(18, Math.min(72, topMargin)), lowest);
+      for (const g of c.items) { const bb = g.bb; if (g.it.kind === 'path' && g.it.painted && bb[3] - bb[1] > 0.4 * c.H && bb[0] <= x0 + 2 && bb[2] >= x1 - 2 && bb[1] > c.view[1] + 4) lim = Math.max(lim, bb[1] + 4); }
+      if (c.footTop != null) lim = Math.max(lim, c.footTop + 0.96 * (median(c.cur.map((l) => l.size)) || 10));     // a running footer stays clear
+      return lim;
+    };
+    const ov = (a, b, t) => Math.min(a[2], b[2]) - Math.max(a[0], b[0]) > (t || 0) && Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > (t || 0);
+    const pageNo = (pi) => pi + 1;
+    const isHeadUnit = (u, body, x0, x1) => u.lines.every((l) => !l.bullet) && u.lines.some((l) => l.bold || l.caps || l.size > 1.1 * body || (/\p{Lu}{3}/u.test(String(l.text).replace(/\s+/g, '')) && !/\p{Ll}/u.test(String(l.text)))) &&
+      (u.x1 - u.x0) < 0.85 * (x1 - x0) && u.lines.map((l) => String(l.text)).join(' ').trim().length < 60;
+    const multi = A.multi;
+    // CSS multi-column: the left column continues in the right one on the same page, the right one on the next page
+    const nextSlot = (pi, x0, x1) => {
+      const mid = (x0 + x1) / 2;
+      if (multi && pi === pageIndex && mid < multi.split) return { pi, x0: multi.R[0], x1: multi.R[1], dx: multi.dx, col: true };
+      if (multi && pi === pageIndex && mid >= multi.split) return { pi: pi + 1, x0: multi.L[0], x1: multi.L[1], dx: -multi.dx };
+      return { pi: pi + 1, x0, x1, dx: 0 };
+    };
+
+    // move [x0, x1] x [yBot, yTop] of page pi down by dy (< 0); what then runs past the bottom flows on
+    const push = async (pi, rectIn, dy, depth, limit, lead) => {
+      if (depth > 6) fail('This would push content across too many pages.');
+      const P = clone(pi), c = await ctxOf(P);
+      if (!c) fail(`Page ${pageNo(pi)} has no text layer to push down.`);
+      // the page the line is added on may move a column plus a full-width area below something that spans the column
+      const rects = Array.isArray(rectIn) ? rectIn : [rectIn];
+      const rect = { x0: Math.min(...rects.map((r) => r.x0)), x1: Math.max(...rects.map((r) => r.x1)), yTop: rects[0].yTop, yBot: Math.min(...rects.map((r) => r.yBot)) };
+      const { x0, x1, yTop } = rect;
+      const inR = (bb) => RF().inRegion(bb, rects, 1);
+      if (limit == null) limit = limitOf(c, x0, x1);
+      const where = `on page ${pageNo(pi)}`;
+      if (depth > 0) {
+        // the same safety checks as for the page the line is added on
+        for (const t of c.texts) {
+          const cy = (t.bb[1] + t.bb[3]) / 2;
+          if (inR(t.bb)) { if (!t.movable) fail(`Some text ${where} can’t be moved cleanly, so the content can’t flow onto it.`, 'locked'); }
+          else if (cy <= yTop && cy >= rect.yBot && t.bb[2] > x0 + 1 && t.bb[0] < x1 - 1 && (t.bb[0] < x0 - 1 || t.bb[2] > x1 + 1)) fail(`A line ${where} runs across the column edge, so that page’s column can’t be pushed down.`, 'shared');
+        }
+        for (const l of c.cur) if (l.y < yTop && l.y > rect.yBot && !l.flowed && l.x < x1 - 1 && l.x + l.width > x0 + 1 && (l.x < x0 - 1 || l.x + l.width > x1 + 1)) fail(`Something ${where} spans across the column, so that page’s column can’t be pushed down.`, 'span', lineBox(l));
+        for (const g of c.items) {
+          if (!solid(g) || isBg(c, g.bb, x0, x1)) continue;
+          const xo = Math.min(g.bb[2], x1) - Math.max(g.bb[0], x0);
+          if (xo > 2 && g.bb[3] > yTop + 2 && g.bb[1] < yTop - 2 && g.bb[1] > c.view[1] + 2) fail(`A box or table ${where} crosses the top of its column, so it can’t be pushed down.`, 'cut');
+          if (g.bb[3] < yTop && xo > 2 && ((g.bb[0] < x0 - 1 && g.bb[2] > x0 + 1) || (g.bb[0] < x1 - 1 && g.bb[2] > x1 + 1)) && g.bb[2] - g.bb[0] < 0.98 * c.W) fail(`Something ${where} spans across the column, so that page’s column can’t be pushed down.`, 'span', g.bb);
+        }
+        const formShows = c.an.shows.filter((x) => x.form);
+        for (const l of c.cur) {
+          if (l.flowed || l.inserted || l.edit || !l.orig || !String(l.text).trim() || !(l.y < yTop && inR(probeBox(l)))) continue;
+          const pb = probeBox(l), cy = (pb[1] + pb[3]) / 2;
+          if (c.texts.some((t) => Math.abs((t.bb[1] + t.bb[3]) / 2 - cy) < 0.45 * l.size && Math.min(t.bb[2], pb[2]) - Math.max(t.bb[0], pb[0]) > -0.2 * l.size && inR(t.bb))) continue;
+          fail(formShows.length && lineShows(formShows, l.orig).length ? `The text ${where} is drawn inside an embedded block (a Form XObject), so it can’t be pushed down.` : `Some text ${where} couldn’t be traced to the page’s drawing commands, so it can’t be pushed down.`, formShows.length ? 'form' : 'locked');
+        }
+      }
+      // what moves (before), then apply the push to the copy
+      const movedIds = new Set(c.cur.filter((l) => l.y < yTop && inR(probeBox(l))).map((l) => l.id));
+      const movedItems = new Set(c.items.filter((g) => g.it.kind !== 'shading' && inR(g.bb) && !isBg(c, g.bb, x0, x1)).map((g) => g.k));
+      const movedTexts = new Set(c.texts.filter((t) => inR(t.bb)).map((t) => t.i));
+      const movedAnns = new Set(c.anns.filter((a) => inR(a.bb)).map((a) => a.i));
+      if (depth > 0) {
+        for (const g of c.items) {
+          const cl = g.it.clipAt; if (!cl || !movedItems.has(g.k) || cl[3] - cl[1] > 0.9 * c.H) continue;
+          const ci = c.items.find((h) => h.it.clip && Math.abs(h.it.bbox[0] - cl[0]) < 0.5 && Math.abs(h.it.bbox[3] - cl[3]) < 0.5);
+          if (!(ci && inR(ci.bb)) && g.bb[1] + dy < cl[1] - 1) fail(`Part of page ${pageNo(pi)} is clipped; pushing it down would hide it.`, 'clip');
+        }
+      }
+      P.shifts.push({ rects: rects.map((r) => Object.assign({}, r)), dy: r3(dy), tol: 1 });
+      for (const l of c.cur) {
+        if (!movedIds.has(l.id) || !l.edit || l.flowed) continue;
+        const e = l.edit, k = P.textEdits.findIndex((x) => x.id === e.id); if (k < 0) continue;
+        P.textEdits[k] = Object.assign({}, e, { move: { dx: e.move ? e.move.dx : 0, dy: r3((e.move ? e.move.dy : 0) + dy) } });
+      }
+      P.annots = P.annots.map((a) => { if (!inR(appAnnotBox(a, c.view))) return a; const q = JSON.parse(JSON.stringify(a)); moveAppAnnot(q, -dy); return q; });
+      P.incoming = P.incoming.map((inc) => {
+        if (!inc.bbox || inc.decor) return inc;
+        const bb = [inc.bbox[0] + (inc.dx || 0), inc.bbox[1] + (inc.dy || 0), inc.bbox[2] + (inc.dx || 0), inc.bbox[3] + (inc.dy || 0)];
+        if (inR(bb)) return Object.assign({}, inc, { dy: r3((inc.dy || 0) + dy) });
+        if (bb[1] < yTop && bb[3] > yTop && Math.min(bb[2], x1) - Math.max(bb[0], x0) > 2) fail('Content that already flowed onto this page would be cut by the push.');
+        return inc;
+      });
+      const c2 = await ctxOf(P);
+      // elements that moved, where they are now
+      const L2 = c2.cur.filter((l) => movedIds.has(l.id) || (l.flowed && inR([l.x, l.y - 0.25 * l.size - dy, l.x + l.width, l.y + 0.8 * l.size - dy])));
+      const I2 = c2.items.filter((g) => movedItems.has(g.k));
+      const T2 = c2.texts.filter((t) => movedTexts.has(t.i));
+      const N2 = c2.anns.filter((a) => movedAnns.has(a.i));
+      const over = L2.some((l) => lineBox(l)[1] < limit - 0.5) || I2.some((g) => solid(g) && g.bb[1] < limit - 0.5);
+      if (!over) return;
+      // rows of the moved lines (a title and its date on one baseline are one row)
+      const units = [];
+      for (const l of L2.slice().sort((p, q) => q.y - p.y)) {
+        const b = lineBox(l), u = units.find((v) => Math.abs(v.y - l.y) < 0.4 * Math.min(v.size, l.size));
+        if (u) { u.lines.push(l); u.top = Math.max(u.top, b[3]); u.bot = Math.min(u.bot, b[1]); u.x0 = Math.min(u.x0, b[0]); u.x1 = Math.max(u.x1, b[2]); }
+        else units.push({ y: l.y, size: l.size, lines: [l], top: b[3], bot: b[1], x0: b[0], x1: b[2] });
+      }
+      units.sort((p, q) => q.y - p.y);
+      const whole = I2.filter((g) => (g.it.kind === 'path' && g.it.painted && g.bb[3] - g.bb[1] > 3) || g.it.kind === 'image' || g.it.kind === 'form' || g.it.kind === 'inline' || (g.it.clip && g.bb[3] - g.bb[1] < 0.9 * c.H));
+      let ySplit = -Infinity;
+      for (const u of units) if (u.bot < limit - 0.5) ySplit = Math.max(ySplit, u.top + 0.25);
+      for (const g of whole) if (solid(g) && g.bb[1] < limit - 0.5) ySplit = Math.max(ySplit, g.bb[3] + 0.25);
+      if (!isFinite(ySplit)) fail('Pdfroo couldn’t find where to break the column.');
+      const body = median(units.map((u) => u.size)) || 10;
+      for (let guard = 0; guard < 40; guard++) {
+        let ch = false;
+        for (const u of units) if (u.top > ySplit && u.bot < ySplit) { ySplit = u.top + 0.25; ch = true; }           // never split a line
+        for (const g of whole) if (g.bb[3] > ySplit && g.bb[1] < ySplit - 0.5) { ySplit = g.bb[3] + 0.25; ch = true; }   // boxes, tables, clips move whole
+        if (!ch) {
+          const stay = units.filter((u) => u.top > ySplit);
+          const low = stay[stay.length - 1];
+          if (low && isHeadUnit(low, body, x0, x1)) { ySplit = low.top + 0.25; ch = true; }      // no widowed headings
+        }
+        if (!ch) {
+          // orphans / widows: a paragraph or bullet item that would leave fewer than 2 of its lines behind, or carry fewer
+          // than 2 on, moves whole
+          for (let k = 0, s0 = 0; k <= units.length; k++) {
+            const u = units[k], pv = units[k - 1];
+            const joins = u && pv && pv.y - u.y <= 1.5 * body && Math.abs(u.size - pv.size) < 0.5 && !u.lines.some((l) => l.bullet) && u.x0 >= units[s0].x0 - 1 && !isHeadUnit(pv, body, x0, x1);
+            if (u && (k === 0 || joins)) continue;
+            const blk = units.slice(s0, k), stayN = blk.filter((v) => v.top > ySplit).length, moveN = blk.length - stayN;
+            if (stayN && moveN && (stayN < 2 || moveN < 2) && blk[0].top + 0.25 > ySplit) { ySplit = blk[0].top + 0.25; ch = true; break; }
+            s0 = k;
+          }
+        }
+        if (!ch) break;
+      }
+      const outU = units.filter((u) => u.top <= ySplit);
+      const outLines = [].concat(...outU.map((u) => u.lines));
+      const cyOut = (bb) => (bb[1] + bb[3]) / 2 < ySplit;
+      const outItems = I2.filter((g) => whole.includes(g) ? g.bb[3] <= ySplit + 0.5 : cyOut(g.bb));
+      const outTexts = T2.filter((t) => cyOut(t.bb));
+      const outAnns = N2.filter((a) => cyOut(a.bb));
+      if (depth === 0 && A.newBottom != null && ySplit >= A.newBottom - 0.5) fail('There isn’t room for the new line at the bottom of this page — add it at the top of the next page instead.', 'newrows');
+      for (const l of outLines) {
+        if (l.flowed) fail('Content that already flowed here would have to move again — undo the earlier change first.', 'reflow');
+        if (l.inserted || l.edit) fail('A line you edited or added would have to move to the next page — Pdfroo keeps edited lines on their page. Add this lower down or undo that edit.', 'edited');
+      }
+      if (P.annots.some((a) => { const bb = appAnnotBox(a, c2.view); return inR([bb[0], bb[1] - dy, bb[2], bb[3] - dy]) && cyOut(bb); })) fail('A note or drawing you added sits in what would move to the next page; move or delete it first.', 'app');
+      if (!outLines.length && !outItems.length) fail('Pdfroo couldn’t find what to move to the next page.');
+      if (outTexts.some((t) => !t.movable)) fail('Some text that would move to the next page can’t be moved cleanly.', 'locked');
+      for (const l of outLines) {
+        if (!String(l.text).trim()) continue;
+        const pb = lineBox(l), cy = (pb[1] + pb[3]) / 2;
+        if (!outTexts.some((t) => Math.abs((t.bb[1] + t.bb[3]) / 2 - cy) < 0.6 * l.size && Math.min(t.bb[2], pb[2]) - Math.max(t.bb[0], pb[0]) > -0.2 * l.size)) fail('Some text that would move to the next page couldn’t be traced to the page’s drawing commands.', 'locked');
+      }
+      // the block that leaves, in this page's current coordinates
+      const bbs = outLines.map(lineBox).concat(outItems.filter(solid).map((g) => g.bb));
+      const blk = { top: Math.max(...bbs.map((b) => b[3])), bot: Math.min(...bbs.map((b) => b[1])), x0: Math.min(...bbs.map((b) => b[0])), x1: Math.max(...bbs.map((b) => b[2])) };
+      const lastBase = outLines.length ? Math.min(...outLines.map((l) => l.y)) : null;
+      const firstBase = outLines.length ? Math.max(...outLines.map((l) => l.y)) : null;
+      // grouped by how far each piece had already been shifted on this page
+      const groups = new Map();
+      const grp = (d) => { const k = (Math.round(d * 100) / 100).toFixed(2); if (!groups.has(k)) groups.set(k, { d: +k, shows: [], items: [], annots: [], lines: [], bb: null }); return groups.get(k); };
+      const ext = (gr, bb) => { gr.bb = gr.bb ? [Math.min(gr.bb[0], bb[0]), Math.min(gr.bb[1], bb[1]), Math.max(gr.bb[2], bb[2]), Math.max(gr.bb[3], bb[3])] : bb.slice(); };
+      for (const t of outTexts) { const gr = grp(t.d); gr.shows.push(t.i); }
+      for (const g of outItems) { const gr = grp(g.d); gr.items.push(g.k); if (solid(g)) ext(gr, g.it.bbox); }
+      for (const a of outAnns) { const gr = grp(a.d); gr.annots.push(a.i); }
+      for (const l of outLines) {
+        const o = l.orig, gr = grp(l.y - o.y);
+        gr.lines.push({ id: o.id, x: o.x, y: o.y, width: o.width, size: o.size, asc: o.asc, desc: o.desc, text: o.text, bold: !!o.bold, caps: !!o.caps, italic: !!o.italic, bullet: !!o.bullet, color: o.color, hs: o.hs });
+        ext(gr, lineBox(o));
+      }
+      P.drops.push({ shows: outTexts.map((t) => t.i), items: outItems.map((g) => g.k), annots: outAnns.map((a) => a.i), lines: outLines.map((l) => l.id) });
+      const out = { pi, lines: outLines.length, links: outAnns.length, boxes: outLines.map(lineBox).concat(outItems.filter(solid).map((g) => g.bb)), src: P.src, index: P.index, fromDy: dy, texts: outLines.slice().sort((p, q) => (q.y - p.y) || (p.x - q.x)).map((l) => String(l.text)), region: rect };
+      // light text (white on a sidebar / band) can only land where a fill continues behind it, or it would vanish
+      const lumOf = (l) => { const m = String(l.color || '#000000').match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i); return m ? (0.2126 * parseInt(m[1], 16) + 0.7152 * parseInt(m[2], 16) + 0.0722 * parseInt(m[3], 16)) / 255 : 0; };
+      const lightOut = outLines.filter((l) => String(l.text).trim() && lumOf(l) > 0.75);
+      const fillOk = (g) => (g.it.kind === 'image' || (g.it.kind === 'path' && g.it.painted && !g.it.stroke && /f|F|B|b/.test(String(g.it.paint || ''))));
+      const backed = (items, T, ddx) => lightOut.every((l) => { const b = lineBox(l), lb = [b[0] + ddx, b[1] + T, b[2] + ddx, b[3] + T]; return items.some((g) => fillOk(g) && g.bb[0] <= lb[0] + 1 && g.bb[2] >= lb[2] - 1 && g.bb[1] <= lb[1] + 1 && g.bb[3] >= lb[3] - 1); });
+      const bgFail = (n) => fail(`Light text that would move sits on a coloured background (e.g. a sidebar) that doesn’t continue on page ${n}, so it would be unreadable there.`, 'bg', lineBox(lightOut[0]));
+      // where it goes
+      const slot = nextSlot(pi, x0, x1);
+      const dx = slot.dx;
+      const mk = (T) => [...groups.values()].map((gr) => ({ src: P.src, index: P.index, shows: gr.shows, items: gr.items, annots: gr.annots, lines: gr.lines, dx: r3(dx), dy: r3(gr.d + T), bbox: gr.bb || [blk.x0, blk.bot, blk.x1, blk.top] }));
+      const Pw = state.pages[pi] ? state.pages[pi].w : P.w, Ph = state.pages[pi] ? state.pages[pi].h : P.h;
+      const topY = c.view[3] - (c.cur.length ? c.view[3] - Math.max(...c.cur.map((l) => lineBox(l)[3])) : 36);
+      if (slot.pi >= state.pages.length) {
+        // a new page: same size and margins; full-height backgrounds (a sidebar) come along, nothing else of the page
+        if (added) fail('This would need more than one new page.');
+        if (Math.abs(c.view[0]) > 0.01 || Math.abs(c.view[1]) > 0.01) fail('This page has an unusual page box, so Pdfroo can’t add a page after it.', 'box');
+        const T = topY - blk.top;
+        if (blk.bot + T < limit - 0.5) fail('What would move to the new page is taller than a page.', 'tall');
+        const decor = c.items.filter((g) => g.it.kind === 'path' && g.it.painted && !g.it.stroke && /f|F|B|b/.test(String(g.it.paint || '')) && g.it.bbox[3] - g.it.bbox[1] >= 0.9 * c.H).map((g) => g.k);
+        if (lightOut.length && !backed(c.items.filter((g) => decor.includes(g.k)), T, dx)) bgFail(pageNo(state.pages.length));
+        added = newPage({ src: null, w: Pw, h: Ph });
+        added.drops = []; added.shifts = []; added.textEdits = [];
+        added.incoming = (decor.length ? [{ src: P.src, index: P.index, shows: [], items: decor, annots: [], lines: [], dx: 0, dy: 0, decor: true, bbox: null }] : []).concat(mk(T));
+        added.flowNew = true;
+        steps.push({ from: pi, to: state.pages.length, newPage: true, lines: out.lines, links: out.links, out, target: { T, dx, bb: [blk.x0 + dx, blk.bot + T, blk.x1 + dx, blk.top + T], x0: slot.x0, x1: slot.x1 } });
+        return;
+      }
+      const qi = slot.pi, Q = clone(qi);
+      if (Math.abs(Q.w - Pw) > 0.5 || Math.abs(Q.h - Ph) > 0.5 || totalRotation(Q)) fail(`Page ${pageNo(qi)} has a different size or rotation, so content can’t flow onto it.`, 'size');
+      const cq = await ctxOf(Q);
+      if (cq && cq.view.some((v, k) => Math.abs(v - c.view[k]) > 0.5)) fail(`Page ${pageNo(qi)} has a different page box, so content can’t flow onto it.`, 'box');
+      // the column's own lines (not pieces of a full-width row that happen to fall inside it)
+      const spans = (l) => cq.cur.some((m) => m !== l && Math.abs(m.y - l.y) < 0.4 * l.size && ((m.x < slot.x0 - 1 && m.x + m.width > slot.x0 + 1) || (m.x < slot.x1 - 1 && m.x + m.width > slot.x1 + 1)));
+      const colLines = cq ? cq.cur.filter((l) => l.x >= slot.x0 - 2 && l.x + l.width <= slot.x1 + 2 && !(slot.col && l.flowed) && !spans(l)) : [];
+      let T, at = null;
+      if (!colLines.length) {
+        const slotTop = cq && cq.cur.length ? Math.max(...cq.cur.map((l) => lineBox(l)[3])) : topY;
+        T = slotTop - blk.top;
+        const tb = [blk.x0 + dx, blk.bot + T, blk.x1 + dx, blk.top + T];
+        if (cq) {
+          const limQ = limitOf(cq, slot.x0, slot.x1);
+          if (tb[1] < limQ - 0.5) fail(`What would move to page ${pageNo(qi)} is taller than the room in its column.`, 'tall');
+          if (cq.cur.concat(cq.furnL).some((l) => ov(lineBox(l), tb, 0.5)) || cq.items.some((g) => solid(g) && !isBg(cq, g.bb, slot.x0, slot.x1) && ov(g.bb, tb, 0.5))) fail(`There’s no free room at the top of page ${pageNo(qi)}’s column for the content that would move there.`, 'landing');
+        }
+      } else {
+        const top = colLines.slice().sort((p, q) => lineBox(q)[3] - lineBox(p)[3])[0];
+        const topB = lineBox(top)[3];
+        T = topB - blk.top;
+        // the column's first row then sits under the block: a heading keeps a heading's space above it, body text a line gap
+        const gap = lead || (outLines[0] ? 1.2 * outLines[0].size : 12);
+        const topUnit = { lines: colLines.filter((l) => Math.abs(l.y - top.y) < 0.4 * l.size), x0: 0, x1: 0 };
+        topUnit.x0 = Math.min(...topUnit.lines.map((l) => l.x)); topUnit.x1 = Math.max(...topUnit.lines.map((l) => l.x + l.width));
+        const bodyQ = median(colLines.map((l) => l.size)) || top.size;
+        const tb0 = lineBox(top), lineGap = Math.max(1, gap - (tb0[3] - tb0[1]));
+        const space = isHeadUnit(topUnit, bodyQ, slot.x0, slot.x1) ? Math.max(gap, 0.9 * (tb0[3] - tb0[1])) : lineGap;
+        const dyQ = Math.min(0, (blk.bot + T - space) - topB);
+        const limQ = limitOf(cq, slot.x0, slot.x1);
+        if (blk.bot + T < limQ - 0.5) fail(`What would move to page ${pageNo(qi)} is taller than the room in its column.`, 'tall');
+        // in reading order the block goes right before the column's first text
+        const firstT = cq.texts.filter((t) => RF().inRegion(t.bb, [{ x0: slot.x0, x1: slot.x1, yTop: topB + 0.5, yBot: cq.view[1] - 2 }], 1)).sort((p, q) => p.i - q.i)[0];
+        if (firstT && !(cq.geo.scan.textClip[firstT.i] && !((cl) => cl[0] <= blk.x0 + dx + 0.5 && cl[2] >= blk.x1 + dx - 0.5 && cl[1] <= blk.bot + T + 0.5 && cl[3] >= blk.top + T - 0.5)(cq.geo.scan.textClip[firstT.i]))) at = firstT.i;
+        await push(qi, { x0: slot.x0, x1: slot.x1, yTop: topB + 0.5, yBot: cq.footTop != null ? cq.footTop + 0.5 : cq.view[1] - 2 }, dyQ, depth + 1, null, lead);
+        const cq2 = await ctxOf(Q), tb = [blk.x0 + dx, blk.bot + T, blk.x1 + dx, blk.top + T];
+        const hit = cq2.cur.concat(cq2.furnL).find((l) => !l.flowed && ov(lineBox(l), tb, 0.5)) || cq2.items.find((g) => solid(g) && !isBg(cq2, g.bb, slot.x0, slot.x1) && ov(g.bb, tb, 0.5));
+        if (hit) fail(`There’s no free room at the top of page ${pageNo(qi)}’s column for the content that would move there.`, 'landing');
+      }
+      if (lightOut.length) { const cqb = await ctxOf(Q); if (!backed(cqb.items, T, dx)) bgFail(pageNo(qi)); }
+      const incs = mk(T); if (at != null) incs.forEach((x) => { x.at = at; });
+      Q.incoming = Q.incoming.concat(incs);
+      steps.push({ from: pi, to: qi, sameColumnPage: !!slot.col, lines: out.lines, links: out.links, out, target: { T, dx, bb: [blk.x0 + dx, blk.bot + T, blk.x1 + dx, blk.top + T], x0: slot.x0, x1: slot.x1 } });
+    };
+    try {
+      await push(pageIndex, A.rect, A.dy, 0, A.limit, A.lead);
+    } catch (e) { if (e.flow) return { fail: e.message, code: e.flow, bb: e.bb }; throw e; }
+    return { pages: clones, newPage: added, steps };
+  }
+
+  /** What flows where, for the preview (display points of the page the line is added on). */
+  function flowSummary(flow, view, dy, pageIndex) {
+    const disp = (bb) => ({ x: bb[0] - view[0], y: view[3] - bb[3], w: bb[2] - bb[0], h: bb[3] - bb[1] });
+    const steps = flow.steps.map((st) => ({ from: st.from, to: st.to, newPage: !!st.newPage, sameColumnPage: !!st.sameColumnPage, lines: st.lines, links: st.links,
+      // PDF coordinates, for checks: what left (where it was before this step's push), where it landed, the pushed column
+      outPre: st.out.boxes.map((b) => [b[0], b[1] - st.out.fromDy, b[2], b[3] - st.out.fromDy]), fromDy: st.out.fromDy, fromRegion: st.out.region, texts: st.out.texts,
+      targetBB: st.target.bb, targetCol: [st.target.x0, st.target.x1], dx: st.target.dx, T: st.target.T }));
+    const s0 = flow.steps[0];
+    const out = s0 ? s0.out.boxes.map((b) => disp([b[0], b[1] - dy, b[2], b[3] - dy])) : [];
+    const pages = [...new Set(steps.map((x) => x.to))];
+    const txt = steps.map((x) => `${x.lines} line${x.lines === 1 ? '' : 's'} → ${x.sameColumnPage ? 'next column' : 'page ' + (x.to + 1) + (x.newPage ? ' (new page)' : '')}`).join(' · ');
+    const incoming = {};
+    for (const st of flow.steps) if (st.to !== pageIndex) (incoming[st.to] = incoming[st.to] || []).push(disp(st.target.bb));
+    return { steps, out, toPage: s0 ? s0.to : null, label: s0 ? (s0.sameColumnPage ? '→ next column' : '→ page ' + (s0.to + 1)) : '', target: s0 ? disp(s0.target.bb) : null, incoming, newPage: !!flow.newPage, pages, text: txt };
+  }
+  /** Page objects of a flow plan as they would be (for a preview of the pages content flows onto). */
+  function flowPreviewPages(state, plan) {
+    const f = plan && plan.flow; if (!f) return [];
+    const outp = [];
+    for (const [pi, p] of f.pages) if (pi !== plan.pageIndex) outp.push({ index: pi, page: p });
+    if (f.newPage) outp.push({ index: state.pages.length, page: f.newPage, added: true });
+    return outp.sort((a, b) => a.index - b.index);
   }
 
   /** Apply a plan (re-planned from its inputs so it matches the page right now). One call = one undo step for the app. */
   async function applyInsert(state, pageIndex, planIn) {
-    const plan = await planInsert(state, pageIndex, planIn.anchorId, planIn.mode, planIn.text, { body: planIn.body, region: planIn.region && planIn.region.dyn ? { x0: planIn.region.x0, x1: planIn.region.x1 } : null });
-    if (!plan.ok) return { ok: false, message: plan.message || 'This can’t be added safely.' };
+    // a page whose text is drawn through Form XObjects switches to its inlined copy (Undo restores the original source)
+    const pg0 = state.pages[pageIndex], srcBefore = pg0 && pg0.src;
+    if (pg0 && planIn.normalize && planIn.normalize.from === pg0.src && sources[planIn.normalize.src] && pristinePage(pg0)) pg0.src = planIn.normalize.src;
+    const plan = await planInsert(state, pageIndex, planIn.anchorId, planIn.mode, planIn.text, { body: planIn.body, fit: !!planIn.fit, region: planIn.region && planIn.region.dyn ? { x0: planIn.region.x0, x1: planIn.region.x1 } : null, _norm: !!planIn.normalize });
+    if (!plan.ok) { if (pg0) pg0.src = srcBefore; return { ok: false, message: plan.message || 'This can’t be added safely.' }; }
     const pg = state.pages[pageIndex];
-    const before = JSON.stringify({ textEdits: pg.textEdits || [], shifts: pg.shifts || [], annots: pg.annots || [] });
-    const revert = () => { const b = JSON.parse(before); pg.textEdits = b.textEdits; pg.shifts = b.shifts; pg.annots = b.annots; };
+    // every page a flow touches (and a page it adds) goes back together
+    const nPages = state.pages.length;
+    const snap = state.pages.map((p) => JSON.stringify({ src: p.src, textEdits: p.textEdits || [], shifts: p.shifts || [], annots: p.annots || [], drops: p.drops || [], incoming: p.incoming || [] }));
+    const revert = () => {
+      pg.src = srcBefore;
+      if (state.pages.length > nPages) state.pages.splice(nPages);
+      state.pages.forEach((p, k) => { const b = JSON.parse(snap[k]); if (k !== pageIndex) p.src = b.src; p.textEdits = b.textEdits; p.shifts = b.shifts; p.annots = b.annots; p.drops = b.drops; p.incoming = b.incoming; });
+    };
     const an = await analyzePage(pg.src, pg.index);
     const geo = await pageGeometry(pg.src, pg.index);
     const view = an.page.view;
     const dy = plan.dy;
     const r3 = (v) => Math.round(v * 1000) / 1000;
+    const flow = plan.flow;
+    if (flow) {
+      for (const [pi, c] of flow.pages) Object.assign(state.pages[pi], { src: c.src, textEdits: c.textEdits.slice(), shifts: c.shifts.slice(), annots: c.annots, drops: c.drops.slice(), incoming: c.incoming.slice() });
+      if (flow.newPage) state.pages.push(flow.newPage);
+    }
     pg.textEdits = (pg.textEdits || []).slice();
     // 1. text below: untouched runs move with the page shift (content stream); edited / added lines move their edit
-    for (const id of plan.moving.lines) {
+    // (a flow plan already did 1-3 on its copy of the page)
+    const fitShifts = !flow && plan.fit ? plan.fit.shifts : null;
+    const curBefore = fitShifts ? currentLines(an, pg) : null;
+    if (!flow) for (const id of plan.moving.lines) {
       const e = pg.textEdits.find((x) => x.lineId === id);
-      if (e) { const ne = Object.assign({}, e, { move: { dx: (e.move ? e.move.dx : 0), dy: r3((e.move ? e.move.dy : 0) + dy) } }); pg.textEdits[pg.textEdits.indexOf(e)] = ne; }
+      let extra = 0;
+      if (fitShifts) { const l = curBefore.find((x) => x.id === id); if (l) extra = RF().shiftFor(probeBox(l), fitShifts); }
+      if (e) { const ne = Object.assign({}, e, { move: { dx: (e.move ? e.move.dx : 0), dy: r3((e.move ? e.move.dy : 0) + dy + extra) } }); pg.textEdits[pg.textEdits.indexOf(e)] = ne; }
     }
     // 2. vector paths, images, links: recorded as a page shift, applied to the content stream at render / export
-    pg.shifts = (pg.shifts || []).concat([{ rects: plan.region.rects, dy: r3(dy), tol: 1 }]);
+    if (!flow) pg.shifts = (pg.shifts || []).concat(fitShifts || [], [{ rects: plan.region.rects, dy: r3(dy), tol: 1 }]);
     // 3. annotations added in Pdfroo
-    const ids = new Set(plan.moving.app);
-    pg.annots = (pg.annots || []).map((a) => { if (!ids.has(a.id)) return a; const c = JSON.parse(JSON.stringify(a)); moveAppAnnot(c, -dy); return c; });
+    const ids = new Set(flow ? [] : plan.moving.app);
+    pg.annots = (pg.annots || []).map((a) => { if (!ids.has(a.id)) return a; const c = JSON.parse(JSON.stringify(a)); const ex = fitShifts ? RF().shiftFor(appAnnotBox(a, view), fitShifts) : 0; moveAppAnnot(c, -(dy + ex)); return c; });
     // 4. the new lines
     const groupId = uid('ins');
     for (const nl of plan.newLines) {
@@ -3145,9 +4050,9 @@
           clone: { key: sh.font, hex, Tfs: sh.Tfs, Th: sh.Th, tm: [M[0], M[1], M[2], M[3], r3(M[4] + nl.x - src.x), r3(M[5] + nl.y - src.y)].map((v) => +m(v)), color: sh.fill || src.color || '#000000' } }));
         continue;
       }
-      const fp = await fontPlanFor(an, src, nl.text);
+      const fp = await fontPlanFor(an, src, nl.text, true);
       if (!fp) { revert(); return { ok: false, message: 'Some of these characters aren’t available in the matching fonts.' }; }
-      pg.textEdits.push(Object.assign(base, { kind: 'text', text: nl.text, tier: fp.tier, label: fp.label, t1: fp.t1, sub: fp.sub, newW: r3(fp.w) }));
+      pg.textEdits.push(Object.assign(base, { kind: 'text', text: nl.text, tier: fp.tier, label: fp.label, t1: fp.t1, sub: fp.sub, sp: fp.sp || undefined, newW: r3(fp.w) }));
     }
     for (const pc of plan.pathClones) {
       const txt = RF().clonePath(geo.scan.items[pc.k], 0, pc.dy);
@@ -3168,6 +4073,20 @@
         const hit = tc.items.some((i) => String(i.str || '').replace(/\s+/g, '').normalize('NFKC').includes(want.slice(0, Math.min(want.length, String(i.str || '').replace(/\s+/g, '').length))) && Math.abs(i.transform[5] - l.y) < 0.4 * l.size && i.transform[4] > l.x - 0.6 * l.size && i.transform[4] < l.x + Math.max(l.width, l.size));
         if (!hit) { revert(); return { ok: false, message: 'Pdfroo couldn’t move the text below cleanly, so nothing was changed.' }; }
       }
+      // what flowed on is on the page it went to
+      if (flow) {
+        const byPage = {};
+        for (const st of flow.steps) (byPage[st.to] = byPage[st.to] || []).push(st);
+        for (const to of Object.keys(byPage)) {
+          const tp = state.pages[+to]; if (!tp) { revert(); return { ok: false, message: 'Pdfroo couldn’t carry the content onto the next page, so nothing was changed.' }; }
+          const px = await getEditedProxy(tp), pp = await px.getPage(1);
+          const txt = (await pp.getTextContent()).items.map((i) => i.str || '').join('').replace(/\s+/g, '').normalize('NFKC');
+          for (const inc of tp.incoming || []) for (const l of inc.lines || []) {
+            const w = String(l.text).replace(/\s+/g, '').normalize('NFKC');
+            if (w.length >= 2 && !txt.includes(w)) { console.warn('flow: missing on page', +to + 1, l.text); revert(); return { ok: false, message: 'Pdfroo couldn’t carry the content onto the next page cleanly, so nothing was changed.' }; }
+          }
+        }
+      }
     } catch (err) { console.warn(err); revert(); return { ok: false, message: 'Pdfroo couldn’t add this cleanly, so nothing was changed.' }; }
     const c = plan.counts, parts = [];
     if (c.lines) parts.push(`${c.lines} line${c.lines === 1 ? '' : 's'}`);
@@ -3176,7 +4095,8 @@
     if (c.links) parts.push(`${c.links} link${c.links === 1 ? '' : 's'}`);
     const lbl = (plan.newLines.find((l) => !l.clone) || {}).label || '';
     const nRows = new Set(plan.newLines.filter((l) => !l.clone).map((l) => l.y.toFixed(1))).size;
-    return { ok: true, message: `Added ${nRows} line${nRows === 1 ? '' : 's'} · ${lbl}` + (parts.length ? ` · moved ${parts.join(', ')} down ${Math.abs(dy).toFixed(1)} pt` : ''), plan };
+    const fl = plan.flowInfo ? ' · ' + plan.flowInfo.text : plan.fit ? ` · kept on one page (${plan.fit.gaps} gaps tightened by up to ${plan.fit.gap} pt)` : '';
+    return { ok: true, message: `Added ${nRows} line${nRows === 1 ? '' : 's'} · ${lbl}` + (parts.length ? ` · moved ${parts.join(', ')} down ${Math.abs(dy).toFixed(1)} pt` : '') + fl, plan, pagesChanged: !!flow, pageAdded: !!(flow && flow.newPage) };
   }
 
   /** An edited line that now runs past its column: plan to keep what fits and wrap the rest onto new lines below. */
@@ -3223,7 +4143,7 @@
     if (!plan.ok) { revert(); return { ok: false, message: plan.message, plan }; }
     const r2 = await applyInsert(state, pageIndex, plan);
     if (!r2.ok) { revert(); return r2; }
-    return { ok: true, message: 'Wrapped onto the next line · ' + r2.message.replace(/^Added [^·]*· /, ''), plan: r2.plan };
+    return { ok: true, message: 'Wrapped onto the next line · ' + r2.message.replace(/^Added [^·]*· /, ''), plan: r2.plan, pagesChanged: r2.pagesChanged, pageAdded: r2.pageAdded };
   }
   /** Preview for wrapping an edited line (nothing changes): the plan of the insert after the line is cut down to what fits. */
   async function previewWrapEdit(state, pageIndex, lineId, opts) {
@@ -3251,7 +4171,7 @@
     // export
     // existing-text editing (tiers 1–3; see README)
     _droppedReps: () => lastDroppedReps.slice(), _pageGeometry: pageGeometry,
-    getTextLines, editTextLine, moveTextLine, getAddOptions, planInsert, applyInsert, planWrapEdit, previewWrapEdit, applyWrapEdit, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
+    getTextLines, editTextLine, moveTextLine, getAddOptions, planInsert, applyInsert, flowPreviewPages, planWrapEdit, previewWrapEdit, applyWrapEdit, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
     _fontReading: async (src, index, lineId, dbg) => { const an = await analyzePage(src, index); const ln = an.lines.find((l) => l.id === lineId); fontDbg = dbg || null; try { return ln && await fontReadingFor(an, ln, null); } finally { fontDbg = null; } },
     exportWithAnnotations, getLastExportFonts: () => Object.assign({}, lastExportFonts), isComplexScript: (t) => COMPLEX_SCRIPT_RE.test(String(t).replace(INDIC_STRIP_RE, '')), hasIndic, ensureScriptFonts, indicMalformed,
     // geometry shared with the UI
