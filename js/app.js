@@ -47,6 +47,27 @@
     $('#toasts').appendChild(el);
     setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, type === 'error' ? 7000 : 2600);
   }
+  /** "Go enjoy a coffee" — a small treat after a successful download; at most once per browser session. */
+  let coffeeShown = false;
+  function coffeeToast() {
+    try { if (sessionStorage.getItem('pdfroo-coffee')) coffeeShown = true; } catch (e) { /* storage blocked */ }
+    if (coffeeShown) return;
+    coffeeShown = true;
+    try { sessionStorage.setItem('pdfroo-coffee', '1'); } catch (e) { /* storage blocked */ }
+    setTimeout(() => {
+      const el = document.createElement('div');
+      el.className = 'coffee-toast'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+      el.innerHTML = '<img src="assets/roo.svg" alt="" width="46" height="53"><p>Done! Your PDF never left your device. Go enjoy a coffee ☕</p>' +
+        '<button class="coffee-close" type="button" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>';
+      let gone = false;
+      const close = () => { if (gone) return; gone = true; el.classList.add('out'); setTimeout(() => el.remove(), 320); };
+      el.querySelector('.coffee-close').addEventListener('click', close);
+      // inside an open modal dialog (e.g. Compress) so it sits above the backdrop and its close button stays clickable
+      const host = [...document.querySelectorAll('dialog[open]')].pop() || document.body;
+      host.appendChild(el);
+      setTimeout(close, 6000);
+    }, 700);
+  }
   function busy(on, text) {
     $('#busy').hidden = !on;
     if (text) $('#busyText').textContent = text;
@@ -1886,10 +1907,11 @@
       if (zip) {
         const names = new Set();
         out.forEach((o) => { let n = o.name, i = 2; while (names.has(n)) n = o.name.replace(/\.pdf$/i, `-${i++}.pdf`); names.add(n); o.name = n; });
-        saveBlob(new Blob([makeZip(out)], { type: 'application/zip' }), 'folio-edited-pdfs.zip');
-        toast(`Downloaded folio-edited-pdfs.zip (${out.length} PDFs)`, 'ok');
+        saveBlob(new Blob([makeZip(out)], { type: 'application/zip' }), 'pdfroo-edited-pdfs.zip');
+        toast(`Downloaded pdfroo-edited-pdfs.zip (${out.length} PDFs)`, 'ok');
       } else { out.forEach((o) => saveBlob(new Blob([o.data], { type: 'application/pdf' }), o.name)); toast(`Downloaded ${out.map((o) => o.name).join(', ')}`, 'ok'); }
       if (files.some((f) => f.main)) ui.dirty = false;
+      coffeeToast();
     } catch (e) { console.error(e); toast('Export failed: ' + (e.message || e), 'error'); }
     finally { busy(false); }
   }
@@ -2092,6 +2114,7 @@
     const name = doc.name.replace(/\.pdf$/i, '') + '-compressed.pdf';
     saveBlob(new Blob([cmp.result.bytes], { type: 'application/pdf' }), name);
     toast(`Downloaded ${name} (${fmtSize(cmp.result.after)})`, 'ok');
+    coffeeToast();
   });
   $('#compressOpen').addEventListener('click', async () => {
     if (!cmp.result) return;
@@ -2123,6 +2146,7 @@
       ui.dirty = false;
       if (ui.signature) toast(sigKept ? `Downloaded ${a.download} — unchanged, so the digital signature is still valid` : `Downloaded ${a.download} — note: the digital signature is no longer valid in this copy`, sigKept ? 'ok' : undefined);
       else toast(`Downloaded ${a.download}`, 'ok');
+      coffeeToast();
     } catch (e) {
       console.error(e);
       toast('Export failed: ' + (e.message || e), 'error');

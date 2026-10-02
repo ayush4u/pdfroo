@@ -209,8 +209,11 @@
 
 <footer>
   <div class="roo-wrap">
-    <span>© <span id="year">2026</span> Pdfroo · free &amp; open source · built with pdf.js &amp; pdf-lib</span>
-    <span>Fonts: Fredoka, Nunito, Baloo 2, Noto Sans (SIL OFL)</span>
+    <div class="roo-foot-meta">
+      <span>© <span id="year">2026</span> Pdfroo · free &amp; open source · built with pdf.js &amp; pdf-lib</span>
+      <span>Fonts: Fredoka, Nunito, Baloo 2, Noto Sans (SIL OFL)</span>
+    </div>
+    <p class="roo-made-by" data-credit>Made by Ayush Tomar</p>
   </div>
 </footer>
 </div>
@@ -256,6 +259,7 @@
         <button class="btn btn-soft" id="addBlankBtn" type="button"><svg class="i"><use href="#i-file-plus"/></svg>Blank page</button>
         <button class="btn btn-soft" id="mergeBtn" type="button"><svg class="i"><use href="#i-merge"/></svg>Merge PDF</button>
         <p class="local-note"><svg class="i"><use href="#i-lock"/></svg>Processed locally — never uploaded</p>
+        <p class="credit-line" data-credit>Made by Ayush Tomar</p>
       </div>
     </aside>
 
@@ -472,6 +476,7 @@
       <li><strong>Signed PDFs:</strong> any change invalidates a digital signature. Pdfroo shows a banner and asks before your first edit. Downloading without changes keeps the original signed file.</li>
       <li><strong>Edit text</strong> changes one line at a time in the original font when possible. Hindi and other Indian scripts (Unicode) can be edited and typed as real, searchable text. Scanned pages, invisible OCR layers, outlined or rotated text, Arabic/Hebrew/Thai lines can't be edited; use White-out + Text instead. Hindi lines whose copied text doesn't match the print, and old Kruti Dev/Chanakya lines, are checked first: Pdfroo reads the printed line (it downloads a small text reader once) and asks you to confirm its reading when it isn't sure.</li>
     </ul>
+    <p class="help-credit" data-credit>Made by Ayush Tomar</p>
   </form>
 </dialog>
 
@@ -530,6 +535,7 @@
 <script src="js/engine/textEdit.js"></script>
 <script src="js/engine/pdfEngine.js"></script>
 <script src="js/engine/compress.js"></script>
+<script src="js/config.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

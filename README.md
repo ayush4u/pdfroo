@@ -24,6 +24,8 @@ then open the printed URL. Click **Try a sample PDF** on the landing page if you
 
 **Landing page** – the Pdfroo kangaroo landing page (local Fredoka/Nunito/Baloo 2 fonts, SVG mascot): every **Open a PDF** button opens the editor, plus drag-and-drop zone, built-in sample PDF, shortcuts to Find & replace and Compress, Indian-language section and privacy ("pouch promise") section. The editor keeps its light/dark theme.
 
+**Credit and config** – `js/config.js` holds `CREDIT_AUTHOR`, `CREDIT_GITHUB` and `CREDIT_LINKEDIN` (empty hides the LinkedIn icon); they fill the quiet "Made by …" line in the landing footer, the pages-panel footer and the shortcuts dialog. After the first successful download in a session (edit, find & replace, compress), a small kangaroo toast says "Done! Your PDF never left your device. Go enjoy a coffee ☕" — no donation ask; it closes after ~6 s and never appears on errors.
+
 **Pages**
 * Thumbnail sidebar (desktop), slide-in drawer (tablet) or bottom sheet (phone)
 * Drag to reorder (SortableJS, touch-friendly long-press on mobile)
@@ -115,6 +117,7 @@ js/engine/textEdit.js   engine-internal: content-stream tokenizer, text-state si
                         line matching / surgical removal (used only by pdfEngine.js)
 js/app.js               UI: tools, overlay interaction, thumbnails, history, shortcuts
 js/sample.js            generates the demo PDF with pdf-lib
+js/config.js            site config: author credit (name, GitHub, LinkedIn)
 vendor/                 pdf.js 3.11 (legacy build + worker, cmaps, standard fonts),
                         pdf-lib 1.17.1, @pdf-lib/fontkit 1.1.1 (lazy-loaded at export),
                         SortableJS 1.15, Inter (UI font), Noto Sans (annotation font):

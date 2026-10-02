@@ -133,4 +133,19 @@
 @media (max-width: 480px) {
   #landing .roo-ctas .roo-pill { flex: 1 1 100%; }
  }
+  #landing #promise { padding-bottom: 40px; }
+  #landing footer { padding: 8px 0 36px; }
+  #landing footer .roo-wrap { align-items: center; gap: 8px 24px; }
+  #landing .roo-foot-meta { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+  #landing [data-credit] { margin: 0; font-weight: 400; color: var(--ink-2); }
+  #landing [data-credit] a { color: var(--ink-2); padding: 4px; margin: -4px 0; border-radius: 6px; }
+  #landing [data-credit] a:hover { color: var(--ink); }
+  #landing [data-credit] a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 720px) {
+  #landing #promise { padding-bottom: 22px; }
+  #landing footer { padding: 2px 0 26px; font-size: 13.5px; line-height: 1.5; }
+  #landing footer .roo-wrap { flex-direction: column; align-items: flex-start; gap: 6px; }
+  #landing .roo-foot-meta { flex-direction: column; gap: 2px; }
+
+}
 
