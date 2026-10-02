@@ -7,8 +7,8 @@
     opts = opts || {};
     const { PDFDocument, StandardFonts, rgb, degrees } = root.PDFLib;
     const doc = await PDFDocument.create();
-    doc.setTitle('Folio sample — Project Proposal');
-    doc.setAuthor('Folio');
+    doc.setTitle('Pdfroo sample — Project Proposal');
+    doc.setAuthor('Pdfroo');
     const reg = await doc.embedFont(StandardFonts.Helvetica);
     const bold = await doc.embedFont(StandardFonts.HelveticaBold);
     const ink = rgb(0.07, 0.08, 0.17), gray = rgb(0.38, 0.41, 0.5), light = rgb(0.9, 0.91, 0.95);

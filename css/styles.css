@@ -311,8 +311,6 @@ p { margin: 0; }
 }
 @media (max-width: 640px) {
   .header-inner { height: 60px; gap: 12px; }
-  .open-file-btn span { display: none; }
-  .open-file-btn { width: 44px; padding: 0; min-height: 44px; }
   .hero { padding: 36px 0 48px; }
   .hero h1 { margin: 16px 0 12px; }
   .dropzone { flex-direction: column; text-align: center; padding: 28px 20px; gap: 14px; }

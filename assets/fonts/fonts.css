@@ -1,0 +1,12 @@
+/* OFL fonts, vendored (see README.md / OFL.txt) */
+@font-face { font-family: "Fredoka"; src: url("Fredoka.woff2") format("woff2"); font-weight: 300 700; font-stretch: 75% 125%; font-display: swap; }
+@font-face { font-family: "Nunito"; src: url("Nunito.woff2") format("woff2"); font-weight: 200 1000; font-display: swap; }
+@font-face { font-family: "Baloo 2"; src: url("Baloo2.woff2") format("woff2"); font-weight: 400 800; font-display: swap; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansBengali-Bold-sample.woff2") format("woff2"); unicode-range: U+0980-09FF; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansGurmukhi-Bold-sample.woff2") format("woff2"); unicode-range: U+0A00-0A7F; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansGujarati-Bold-sample.woff2") format("woff2"); unicode-range: U+0A80-0AFF; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansOriya-Bold-sample.woff2") format("woff2"); unicode-range: U+0B00-0B7F; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansTamil-Bold-sample.woff2") format("woff2"); unicode-range: U+0B80-0BFF; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansTelugu-Bold-sample.woff2") format("woff2"); unicode-range: U+0C00-0C7F; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansKannada-Bold-sample.woff2") format("woff2"); unicode-range: U+0C80-0CFF; }
+@font-face { font-family: "Indic Sample"; src: url("NotoSansMalayalam-Bold-sample.woff2") format("woff2"); unicode-range: U+0D00-0D7F; }

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 300" role="img" aria-label="Pdfroo, a kangaroo keeping a PDF page safe in its pouch">
+  <title>Pdfroo</title>
+  <g stroke="#3b2a20" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- tail -->
+    <path d="M176 226 C214 222 244 238 248 282 C232 270 206 262 170 258 Z" fill="#e3a062"/>
+    <!-- feet -->
+    <ellipse cx="96" cy="276" rx="34" ry="12" fill="#d48d50"/>
+    <ellipse cx="166" cy="276" rx="34" ry="12" fill="#d48d50"/>
+    <!-- body -->
+    <path d="M130 118 C176 118 196 168 194 210 C192 252 166 272 130 272 C94 272 68 252 66 210 C64 168 84 118 130 118 Z" fill="#e8a867"/>
+    <path d="M130 150 C158 150 170 182 170 212 C170 242 154 258 130 258 C106 258 90 242 90 212 C90 182 102 150 130 150 Z" fill="#f7dcb6" stroke="none"/>
+    <!-- the page, tucked in the pouch -->
+    <g transform="rotate(-7 130 190)">
+      <path d="M106 150 H146 L158 162 V222 H106 Z" fill="#fffdf8"/>
+      <path d="M146 150 V162 H158" fill="#f1e9dc"/>
+      <path d="M114 172 H148 M114 182 H150 M114 192 H140" stroke="#c9bba6" stroke-width="2.6"/>
+      <rect x="113" y="158" width="24" height="9" rx="3" fill="#ff7a6b" stroke="none"/>
+    </g>
+    <!-- arms holding the page -->
+    <ellipse cx="112" cy="181" rx="9" ry="7" fill="#e8a867" transform="rotate(-20 112 181)"/>
+    <ellipse cx="152" cy="177" rx="9" ry="7" fill="#e8a867" transform="rotate(20 152 177)"/>
+    <!-- pouch front -->
+    <path d="M90 200 C104 214 156 214 170 200 C172 232 156 250 130 250 C104 250 88 232 90 200 Z" fill="#f2c995"/>
+    <path d="M100 210 C116 218 144 218 160 210" fill="none" stroke-width="2.4" stroke="#c98e57"/>
+    <!-- ears -->
+    <path d="M100 66 C84 40 82 10 92 4 C104 0 116 30 114 62 Z" fill="#e8a867"/>
+    <path d="M100 58 C92 40 92 20 96 14 C102 16 108 36 108 56 Z" fill="#f6b8b0" stroke="none"/>
+    <path d="M160 66 C176 40 178 10 168 4 C156 0 144 30 146 62 Z" fill="#e8a867"/>
+    <path d="M160 58 C168 40 168 20 164 14 C158 16 152 36 152 56 Z" fill="#f6b8b0" stroke="none"/>
+    <!-- head -->
+    <path d="M130 52 C166 52 182 76 182 100 C182 128 158 144 130 144 C102 144 78 128 78 100 C78 76 94 52 130 52 Z" fill="#e8a867"/>
+    <ellipse cx="130" cy="118" rx="27" ry="19" fill="#f7dcb6"/>
+    <ellipse cx="130" cy="106" rx="8" ry="5.5" fill="#3b2a20"/>
+    <path d="M121 120 C126 126 134 126 139 120" fill="none"/>
+    <path d="M130 111 V118" fill="none" stroke-width="2.6"/>
+    <!-- eyes -->
+    <ellipse cx="108" cy="92" rx="6" ry="7.5" fill="#3b2a20"/>
+    <ellipse cx="152" cy="92" rx="6" ry="7.5" fill="#3b2a20"/>
+  </g>
+  <circle cx="110" cy="89" r="2.2" fill="#fff"/>
+  <circle cx="154" cy="89" r="2.2" fill="#fff"/>
+  <ellipse cx="94" cy="112" rx="8" ry="5" fill="#f58f86" opacity=".55"/>
+  <ellipse cx="166" cy="112" rx="8" ry="5" fill="#f58f86" opacity=".55"/>
+  <text x="125" y="164.5" font-family="Fredoka, sans-serif" font-weight="700" font-size="7.5" fill="#fff" text-anchor="middle" transform="rotate(-7 130 190)">PDF</text>
+</svg>

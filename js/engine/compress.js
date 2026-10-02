@@ -408,9 +408,9 @@
     if (!reached) {
       const other = best.length - imgAfter;
       const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
-      if (other > opts.target) explain = `This is the smallest Folio can make it without turning text into pictures: text, fonts and drawings alone take ${kb(other)}, more than the ${kb(opts.target)} target (images are only ${kb(imgAfter)}).`;
-      else if (!usable.length) explain = `There are no images Folio can shrink in this file${skipped.length ? ' (' + [...new Set(skipped)].join(', ') + ')' : ''}; text, fonts and drawings are kept as they are.`;
-      else explain = `Images are already at the lowest quality Folio will go (${LADDER[LADDER.length - 1][0]} dpi). Text, fonts and drawings take ${kb(other)} of the ${kb(best.length)}.`;
+      if (other > opts.target) explain = `This is the smallest Pdfroo can make it without turning text into pictures: text, fonts and drawings alone take ${kb(other)}, more than the ${kb(opts.target)} target (images are only ${kb(imgAfter)}).`;
+      else if (!usable.length) explain = `There are no images Pdfroo can shrink in this file${skipped.length ? ' (' + [...new Set(skipped)].join(', ') + ')' : ''}; text, fonts and drawings are kept as they are.`;
+      else explain = `Images are already at the lowest quality Pdfroo will go (${LADDER[LADDER.length - 1][0]} dpi). Text, fonts and drawings take ${kb(other)} of the ${kb(best.length)}.`;
     }
     return { bytes: best, before, after: best.length, reached, steps, dpi: used ? used[0] : null, quality: used ? used[1] : null, images: items.length, recompressed: usable.length, skipped: [...new Set(skipped)], imageBytes: { before: imgBefore, after: imgAfter }, deduped, removed, flated, explain };
   }

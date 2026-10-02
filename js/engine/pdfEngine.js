@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Folio — PDF engine boundary
+   Pdfroo — PDF engine boundary
    --------------------------------------------------------------------------
    The ONLY place that talks to pdf.js (rendering) and pdf-lib (writing).
    UI code (app.js) calls window.PdfEngine exclusively, so the engine can be
@@ -57,7 +57,7 @@
     try { pdf = await task.promise; }
     catch (err) {
       if (err && err.name === 'PasswordException') {
-        throw userError(`“${name || 'This PDF'}” is password-protected, so Folio can’t open it. Remove the password in your PDF app (or ask the sender for an unprotected copy) and try again.`, 'password');
+        throw userError(`“${name || 'This PDF'}” is password-protected, so Pdfroo can’t open it. Remove the password in your PDF app (or ask the sender for an unprotected copy) and try again.`, 'password');
       }
       throw userError(`“${name || 'This file'}” couldn’t be read — it may be damaged or not a real PDF.`, 'invalid');
     }
@@ -74,7 +74,7 @@
       const encrypted = (root.PDFLib.EncryptedPDFError && err instanceof root.PDFLib.EncryptedPDFError) || /encrypt/i.test(String(err && err.message));
       if (encrypted) {
         try { pdf.destroy(); } catch (e) { /* ignore */ }
-        throw userError(`“${name || 'This PDF'}” is encrypted (protected with edit/print restrictions), so Folio can’t edit it yet. Open it in a PDF viewer, save or “Print to PDF” an unprotected copy, and try again.`, 'encrypted');
+        throw userError(`“${name || 'This PDF'}” is encrypted (protected with edit/print restrictions), so Pdfroo can’t edit it yet. Open it in a PDF viewer, save or “Print to PDF” an unprotected copy, and try again.`, 'encrypted');
       }
       libDoc = null; // pdf-lib couldn't parse it; pdf.js could — let the user view it, export will report errors
     }
@@ -710,7 +710,7 @@
           ln.reason = `This line uses an older Hindi font (${ln.legacyFont}) that stores text in a non-standard way; editing isn’t supported yet. Use White-out + Text to replace it.`;
         }
       }
-      else if (SHAPING_SCRIPT_RE.test(text.replace(INDIC_STRIP_RE, ''))) { ln.editable = false; ln.reason = 'This line uses a script Folio can’t typeset into an existing line yet (e.g. Arabic, Hebrew, Thai, Sinhala) — use White-out + Text instead.'; }
+      else if (SHAPING_SCRIPT_RE.test(text.replace(INDIC_STRIP_RE, ''))) { ln.editable = false; ln.reason = 'This line uses a script Pdfroo can’t typeset into an existing line yet (e.g. Arabic, Hebrew, Thai, Sinhala) — use White-out + Text instead.'; }
       else if (hasIndic(text) && indicMalformed(text)) { ln.verify = 'garbled'; ln.verifyReason = 'The text layer copies out scrambled (display order or wrong characters).'; }
       else if (/^[\uE000-\uF8FF\s]+$/.test(text) && text.trim().length <= 3) { ln.editable = false; ln.symbol = true; ln.reason = 'This is a symbol (such as a bullet) from a symbol font, so it can’t be edited as text — but it can be moved (arrow keys or the nudge buttons).'; }
       else if (BAD_TEXT_RE.test(text)) { ln.editable = false; ln.reason = 'This text has no reliable character mapping (it copies out as gibberish), so it can’t be edited safely.'; }
@@ -1215,7 +1215,7 @@
         ocr.raw = ocr.text; ocr.text = V.trimEdges(ocr.text, [(font && font.text) || '', ln.text]);
         ms.ocrLoad = ocr.loadMs; ms.ocr = ocr.ms;
       } catch (e) {
-        ocrError = e && e.code === 'file' ? 'OCR needs Folio to be opened over http(s), so only the font reading is available.' : 'OCR couldn’t run here, so only the font reading is available.';
+        ocrError = e && e.code === 'file' ? 'OCR needs Pdfroo to be opened over http(s), so only the font reading is available.' : 'OCR couldn’t run here, so only the font reading is available.';
         if (!(e && e.code === 'file')) console.warn(e);
       }
     }
@@ -1281,7 +1281,7 @@
   /** Lines on a page for the UI, in displayed-page coordinates (points, top-left origin). */
   async function getTextLines(pg) {
     if (pg.src == null || !sources[pg.src]) return { refusal: { code: 'blank', message: 'This page has no text to edit (it’s a blank page you added).' }, lines: [] };
-    if (!sources[pg.src].libDoc) return { refusal: { code: 'unsupported', message: 'Folio couldn’t read this PDF’s structure, so its text can’t be edited.' }, lines: [] };
+    if (!sources[pg.src].libDoc) return { refusal: { code: 'unsupported', message: 'Pdfroo couldn’t read this PDF’s structure, so its text can’t be edited.' }, lines: [] };
     const an = await analyzePage(pg.src, pg.index);
     const vp = an.page.getViewport({ scale: 1, rotation: totalRotation(pg) });
     const edits = pg.textEdits || [];
@@ -1297,7 +1297,10 @@
       const ax = e && e.alignDx && !e.moveOnly ? e.alignDx : 0, S = (e && e.style && e.style.size) || ln.size;
       const corner = (u, v) => vp.convertToViewportPoint(ln.x + mv.dx + ax + ux * u + vx * v, ln.y + mv.dy + uy * u + vy * v);
       const poly = [corner(0, ln.desc * S), corner(w, ln.desc * S), corner(w, ln.asc * S), corner(0, ln.asc * S)];
-      const xs = poly.map((q) => q[0]), ys = poly.map((q) => q[1]);
+      // the box also covers where the original text was (it is removed there), e.g. a shortened or re-aligned line
+      const cornerO = (u, v) => vp.convertToViewportPoint(ln.x + mv.dx + ux * u + vx * v, ln.y + mv.dy + uy * u + vy * v);
+      const span = e && !e.moveOnly ? poly.concat([cornerO(0, ln.desc * ln.size), cornerO(ln.width, ln.desc * ln.size), cornerO(ln.width, ln.asc * ln.size), cornerO(0, ln.asc * ln.size)]) : poly;
+      const xs = span.map((q) => q[0]), ys = span.map((q) => q[1]);
       const x0 = Math.min(...xs), y0 = Math.min(...ys);
       out.push({
         id: ln.id, x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0, poly: poly.map((q) => [+q[0].toFixed(2), +q[1].toFixed(2)]),
@@ -1362,7 +1365,7 @@
       const pg = state.pages[pi];
       if (pg.src == null) continue;
       let data;
-      try { data = await getTextLines(pg); } catch (err) { notes.push({ pageIndex: pi, message: 'Folio couldn’t read the text on this page.' }); continue; }
+      try { data = await getTextLines(pg); } catch (err) { notes.push({ pageIndex: pi, message: 'Pdfroo couldn’t read the text on this page.' }); continue; }
       if (!data.lines.length) {
         if (data.refusal) notes.push({ pageIndex: pi, code: data.refusal.code, message: data.refusal.message });
         continue;
@@ -1627,7 +1630,7 @@
     if (moveOnly || styled) { /* same text, new position or style */ } else if (text === ln.text || (ln.verify && ln.verifiedText && text === ln.verifiedText && !(opts && opts.repair))) { pg.textEdits = prevEdits.filter((e) => e.lineId !== lineId); return { ok: true, edit: null, message: 'Line restored to the original text.' }; }
     const fail = (message) => { pg.textEdits = prevEdits; return { ok: false, message }; };
     if (styled && ln.indic && (style.bold != null || style.italic != null)) return fail('Bold / italic can’t be changed on this line yet.');
-    if (COMPLEX_SCRIPT_RE.test(text.replace(INDIC_STRIP_RE, ''))) return fail('Folio can’t typeset this script into an existing line yet (e.g. Arabic, Hebrew, Thai, emoji). Use the Text tool instead.');
+    if (COMPLEX_SCRIPT_RE.test(text.replace(INDIC_STRIP_RE, ''))) return fail('Pdfroo can’t typeset this script into an existing line yet (e.g. Arabic, Hebrew, Thai, emoji). Use the Text tool instead.');
     const shapedPath = ln.indic || hasIndic(text);
 
     const e = {
@@ -1666,7 +1669,7 @@
         shapedW = sh.width / 1000 * ln.size * e.sub.tz / 100;
       } catch (err) {
         console.warn(err);
-        return fail('Folio couldn’t load its Indic text engine, so this line wasn’t changed.');
+        return fail('Pdfroo couldn’t load its Indic text engine, so this line wasn’t changed.');
       }
     }
     // tier 1
@@ -1694,7 +1697,7 @@
       break;
     }
     if (!e.t1 && !e.sub && !shapedPath) {
-      if (text.trim()) return fail('Some of these characters aren’t available in the matching fonts Folio bundles.');
+      if (text.trim()) return fail('Some of these characters aren’t available in the matching fonts Pdfroo bundles.');
     }
     if (!e.t1 && !shapedPath) {
       e.tier = e.sub ? e.sub.tier : 0;
@@ -1761,7 +1764,7 @@
       v = await verifyEdit(pg, e, ln, an);
     }
     if (!v.ok && e.removal === 'stream') { e.removal = 'cover'; v = await verifyEdit(pg, e, ln, an); }
-    if (!v.ok) return fail('Folio couldn’t apply this edit cleanly, so it was not made.');
+    if (!v.ok) return fail('Pdfroo couldn’t apply this edit cleanly, so it was not made.');
     let message = (moveOnly ? 'Moved · redrawn in ' : '') + e.label + fitNote;
     if (e.removal === 'cover') message += ' · original text covered (it stays in the file underneath)';
     return { ok: true, edit: e, message };
@@ -1790,7 +1793,7 @@
       if (zero) delete e2.move;
       pg.textEdits = prev.map((e) => (e === ex ? e2 : e));
       const v = await verifyEdit(pg, e2, ln, an);
-      if (!v.ok) { pg.textEdits = prev; return { ok: false, message: 'Folio couldn’t move this line cleanly, so it was left where it was.' }; }
+      if (!v.ok) { pg.textEdits = prev; return { ok: false, message: 'Pdfroo couldn’t move this line cleanly, so it was left where it was.' }; }
       return { ok: true, edit: e2, message: 'Moved the edited line' };
     }
     if (zero) { pg.textEdits = prev.filter((e) => e.lineId !== lineId); return { ok: true, edit: null, message: 'Back in its original position' }; }
@@ -2423,8 +2426,8 @@
     }
 
     out.setTitle(p.title || 'Edited document');
-    out.setProducer('Folio PDF editor (pdf-lib)');
-    out.setCreator('Folio');
+    out.setProducer('Pdfroo PDF editor (pdf-lib)');
+    out.setCreator('Pdfroo');
     out.setModificationDate(new Date());
     if (out.__folioIndic) out.__folioIndic.finalize();   // shaped-text fonts (CIDs are allocated while drawing)
     if (reuseBase) pruneUnreachable(out);          // drop replaced content streams / deleted pages

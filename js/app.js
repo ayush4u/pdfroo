@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Folio — UI layer. Talks to the PDF engine ONLY through window.PdfEngine.
+   Pdfroo — UI layer. Talks to the PDF engine ONLY through window.PdfEngine.
    All document data lives in `doc` (plain JSON-serializable object).
    ========================================================================== */
 (function () {
@@ -975,7 +975,7 @@
     buildPropbar();
     let data;
     try { data = await E.getTextLines(pg); }
-    catch (err) { console.error(err); data = { refusal: { code: 'error', message: 'Folio couldn’t read the text on this page.' }, lines: [] }; }
+    catch (err) { console.error(err); data = { refusal: { code: 'error', message: 'Pdfroo couldn’t read the text on this page.' }, lines: [] }; }
     if (token !== ui.linesToken) return;
     ui.lines.data = data;
     renderOverlay(); buildPropbar();
@@ -1134,14 +1134,14 @@
           else if (/recognizing/.test(m.status)) busy(true, 'Reading the printed line…');
         },
       });
-    } catch (err) { console.error(err); res = { ok: false, message: 'Folio couldn’t check this line.' }; }
+    } catch (err) { console.error(err); res = { ok: false, message: 'Pdfroo couldn’t check this line.' }; }
     busy(false);
     if (curPage() !== pg) return;
     if (!res.ok) { toast(res.message, 'error'); return; }
     if (res.decision === 'text') openLineEditor(ln);
     else if (res.decision === 'silent') {
       openLineEditor(ln, { prefill: res.best, verified: true, source: res.source });
-      if (res.source === 'learned') toast('Folio read this line with glyphs it learned earlier in this document (the printed image agrees).', 'ok');
+      if (res.source === 'learned') toast('Pdfroo read this line with glyphs it learned earlier in this document (the printed image agrees).', 'ok');
     }
     else openIndicDialog(ln, res);
   }
@@ -1158,15 +1158,15 @@
     $('#indicDlgImg').src = res.image || '';
     $('#indicDlgImg').closest('figure').hidden = !res.image;
     const why = res.decision === 'confirm' ? ({
-      'font reading and OCR disagree': 'The copied text of this line doesn’t match what’s printed, and Folio’s two readings of it (from the font’s glyphs and from the printed image) differ.',
-      'font reading and OCR agree, but some glyphs aren’t in the font’s cmap': 'Both of Folio’s readings agree, but some glyphs (conjuncts) could only be read from the PDF’s own, unreliable text map.',
-      'OCR isn’t available here': 'Only the font reading is available (reading the printed image needs Folio to be opened over http(s)).',
+      'font reading and OCR disagree': 'The copied text of this line doesn’t match what’s printed, and Pdfroo’s two readings of it (from the font’s glyphs and from the printed image) differ.',
+      'font reading and OCR agree, but some glyphs aren’t in the font’s cmap': 'Both of Pdfroo’s readings agree, but some glyphs (conjuncts) could only be read from the PDF’s own, unreliable text map.',
+      'OCR isn’t available here': 'Only the font reading is available (reading the printed image needs Pdfroo to be opened over http(s)).',
       'the font can’t be read back': 'The font’s glyphs couldn’t be read back, so this reading comes from the printed image only.',
-      'font reading and OCR agree, but the text layer differs': 'The copied text of this line doesn’t match what’s printed. Folio’s two readings of it (from the font’s glyphs and from the printed image) agree.',
+      'font reading and OCR agree, but the text layer differs': 'The copied text of this line doesn’t match what’s printed. Pdfroo’s two readings of it (from the font’s glyphs and from the printed image) agree.',
       'OCR matches the text layer, but the font’s glyphs say otherwise': 'The printed image matches the copied text, but the font’s own glyphs say something else.',
-      'legacy font; converter and OCR agree': `This line uses an older Hindi font (${res.legacyFont}) that stores Devanagari as Latin letters. Folio converted it, and reading the printed image gives the same letters. It will be saved as Unicode text in Noto Sans Devanagari.`,
-      'legacy font; converter and OCR disagree': `This line uses an older Hindi font (${res.legacyFont}) that stores Devanagari as Latin letters. Folio converted it; reading the printed image gives something different, so please check. It will be saved as Unicode text in Noto Sans Devanagari.`,
-      'legacy font; OCR isn’t available here': `This line uses an older Hindi font (${res.legacyFont}) that stores Devanagari as Latin letters. Folio converted it (reading the printed image needs http(s)). It will be saved as Unicode text in Noto Sans Devanagari.`,
+      'legacy font; converter and OCR agree': `This line uses an older Hindi font (${res.legacyFont}) that stores Devanagari as Latin letters. Pdfroo converted it, and reading the printed image gives the same letters. It will be saved as Unicode text in Noto Sans Devanagari.`,
+      'legacy font; converter and OCR disagree': `This line uses an older Hindi font (${res.legacyFont}) that stores Devanagari as Latin letters. Pdfroo converted it; reading the printed image gives something different, so please check. It will be saved as Unicode text in Noto Sans Devanagari.`,
+      'legacy font; OCR isn’t available here': `This line uses an older Hindi font (${res.legacyFont}) that stores Devanagari as Latin letters. Pdfroo converted it (reading the printed image needs http(s)). It will be saved as Unicode text in Noto Sans Devanagari.`,
     }[res.why] || res.why) : res.why;
     const anyDiff = res.marks && Object.entries(res.marks).some(([k, m]) => m && !(res.legacy && k === 'textLayer') && m.some((x) => x.diff));
     $('#indicDlgWhy').textContent = why + (anyDiff ? ' Highlighted parts differ from the best reading.' : '');
@@ -1725,7 +1725,7 @@
     $('#findSummary').textContent = 'Searching…';
     for (const f of fr.files) {
       let r;
-      try { r = await E.findText(f.state, q, fr.opts); } catch (err) { console.error(err); r = { hits: [], notes: [{ pageIndex: -1, message: 'Folio couldn’t search this file.' }] }; }
+      try { r = await E.findText(f.state, q, fr.opts); } catch (err) { console.error(err); r = { hits: [], notes: [{ pageIndex: -1, message: 'Pdfroo couldn’t search this file.' }] }; }
       r.hits.forEach((h) => { h.fileId = f.id; fr.hits.push(h); if (h.editable) fr.sel.add(frKey(h)); });
       fr.notes[f.id] = r.notes;
     }
@@ -2016,7 +2016,7 @@
     if (cmp.target) {
       note = r.reached
         ? `Fits your ${fmtSize(cmp.target)} limit.` + (r.dpi ? ` Images at ${r.dpi} dpi, quality ${Math.round(r.quality * 100)}.` : ' No image quality was lost.')
-        : `Couldn’t reach ${fmtSize(cmp.target)}. ` + (r.explain || 'This is the smallest version Folio can make.');
+        : `Couldn’t reach ${fmtSize(cmp.target)}. ` + (r.explain || 'This is the smallest version Pdfroo can make.');
     } else if (r.dpi) note = `Images re-encoded at ${r.dpi} dpi, quality ${Math.round(r.quality * 100)}. Text and drawings are unchanged.`;
     else if (!r.images) note = 'This PDF has no images, so only lossless clean-up was possible (duplicate fonts and unused objects removed, streams compressed). Text-only PDFs are usually already small.';
     else note = 'The images are already well compressed, so only lossless clean-up was possible.' + (r.skipped.length ? ' Kept as is: ' + r.skipped.join(', ') + '.' : '');

@@ -3,11 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Folio — Private PDF editor in your browser</title>
-<meta name="description" content="Folio is a free, private PDF editor that runs entirely in your browser. Add text, draw, highlight, sign, reorder, merge and export PDFs — your files never leave your device.">
+<title>Pdfroo — edit PDFs right on your device</title>
+<meta name="description" content="Pdfroo is a free PDF editor that runs in your browser. Edit existing text in its original font, work in Hindi and 8 more Indian scripts, sign, merge and compress — your PDF never leaves your device.">
 <meta name="theme-color" content="#5b50f0">
+<meta name="application-name" content="Pdfroo">
+<meta name="apple-mobile-web-app-title" content="Pdfroo">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Pdfroo">
+<meta property="og:title" content="Pdfroo — edit PDFs right on your device">
+<meta property="og:description" content="Edit the text that’s already there, in its original font. Hindi and Indian languages. Your PDF never leaves your device.">
+<meta property="og:url" content="https://ayush4u.github.io/pdfroo/">
+<meta property="og:image" content="https://ayush4u.github.io/pdfroo/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Pdfroo the kangaroo holding a PDF page in its pouch, next to the Pdfroo editor">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Pdfroo — edit PDFs right on your device">
+<meta name="twitter:description" content="Edit text in its original font, in Hindi and Indian languages — your PDF never leaves your device.">
+<meta name="twitter:image" content="https://ayush4u.github.io/pdfroo/assets/og-image.png">
 <link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="assets/fonts/fonts.css">
+<link rel="stylesheet" href="css/landing.css">
 <script>
   // Apply theme before first paint to avoid a flash.
   (function () {
@@ -77,140 +95,124 @@
 </svg>
 
 <!-- ======================= LANDING ======================= -->
-<div id="landing" class="view view-landing">
-  <header class="site-header">
-    <div class="container header-inner">
-      <a class="brand" href="#" aria-label="Folio home">
-        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="4" y="3" width="21" height="26" rx="5" fill="currentColor"/><path d="M10 11h10M10 16h10M10 21h6" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="25.5" cy="24.5" r="4.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/></svg></span>
-        <span class="brand-name">Folio</span>
-      </a>
-      <nav class="site-nav" aria-label="Primary">
-        <a href="#features">Features</a>
-        <a href="#how">How it works</a>
-        <a href="#privacy">Privacy</a>
-      </nav>
-      <div class="header-actions">
-        <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle theme">
-          <svg class="i i-sun"><use href="#i-sun"/></svg><svg class="i i-moon"><use href="#i-moon"/></svg>
-        </button>
-        <button class="btn btn-primary btn-sm open-file-btn" type="button"><svg class="i"><use href="#i-upload"/></svg><span>Open PDF</span></button>
+<div id="landing" class="view view-landing roo">
+<nav>
+  <div class="roo-wrap">
+    <a class="roo-logo" href="#" aria-label="Pdfroo home"><img src="assets/roo-head.svg" alt="" width="40" height="48"><span>pdf<b>roo</b></span></a>
+    <ul>
+      <li><a href="#why">Why Pdfroo</a></li>
+      <li><a href="#languages">Indian languages</a></li>
+      <li><a href="#find">Find &amp; replace</a></li>
+      <li><a href="#promise">Privacy</a></li>
+    </ul>
+    <button class="roo-pill roo-pill-dark open-file-btn" type="button">Open a PDF</button>
+  </div>
+</nav>
+
+<header class="roo-hero">
+  <div class="roo-wrap roo-hero-grid">
+    <div>
+      <span class="roo-tag"><i>✓</i>Free · no sign-up · nothing to install</span>
+      <h1>Fix your PDF<br>without it ever <span class="roo-u">leaving home<svg viewBox="0 0 200 16" preserveAspectRatio="none" aria-hidden="true"><path d="M3 11 C40 4 70 14 104 8 S170 4 197 9" fill="none" stroke="#ff7a6b" stroke-width="5" stroke-linecap="round"/></svg></span>.</h1>
+      <p class="roo-sub">Pdfroo is a PDF editor that runs in your browser. Like a kangaroo with its joey, it keeps your file in its pouch — on your phone or laptop, never on someone else’s server.</p>
+      <ul class="roo-points">
+        <li><span>Aa</span>Edit the text that’s already there, in its original font</li>
+        <li><span>हि</span>Hindi and 8 more Indian scripts, as real searchable text</li>
+        <li><span>🔒︎</span>Your PDF never leaves your device — no uploads, ever</li>
+      </ul>
+      <div class="roo-ctas">
+        <button class="roo-pill roo-pill-dark open-file-btn" type="button">Open a PDF — it’s free</button>
+        <button id="sampleBtn" class="roo-pill roo-pill-light" type="button">Try a sample PDF</button>
+      </div>
+      <div id="dropzone" class="roo-drop" role="button" tabindex="0" aria-label="Open a PDF: drop a file here or press Enter to browse">
+        <strong>Drop a PDF here</strong> <span>or click to browse · it stays on your device</span>
+      </div>
+      <div class="roo-more">
+        <button id="landingFindBtn" class="roo-link-btn" type="button">Find &amp; replace in several PDFs</button>
+        <button id="landingCompressBtn" class="roo-link-btn" type="button">Compress a PDF</button>
       </div>
     </div>
-  </header>
-
-  <main>
-    <section class="hero">
-      <div class="container hero-grid">
-        <div class="hero-copy">
-          <span class="pill"><svg class="i"><use href="#i-shield"/></svg>100% in your browser · no uploads</span>
-          <h1>Edit any PDF.<br><span class="grad">Right here, privately.</span></h1>
-          <p class="lead">Add text, highlight, draw, sign, reorder and merge pages — then download a real PDF. Folio runs entirely on your device, on phone, tablet or desktop.</p>
-
-          <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Upload a PDF: drop a file here or press Enter to browse">
-            <div class="dz-icon" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg></div>
-            <div class="dz-text">
-              <strong>Drop your PDF here</strong>
-              <span>or <u>click to browse</u> · up to hundreds of pages</span>
-            </div>
-            <div class="dz-over" aria-hidden="true">Release to open</div>
-          </div>
-          <div class="hero-actions">
-            <button id="sampleBtn" class="btn btn-ghost" type="button"><svg class="i"><use href="#i-sparkle"/></svg>Try with a sample PDF</button>
-            <button id="landingFindBtn" class="btn btn-ghost" type="button"><svg class="i"><use href="#i-search"/></svg>Find &amp; replace in several PDFs</button>
-            <button id="landingCompressBtn" class="btn btn-ghost" type="button"><svg class="i"><use href="#i-compress"/></svg>Compress a PDF</button>
-            <span class="hero-note"><svg class="i"><use href="#i-lock"/></svg>Files never leave your device</span>
-          </div>
-        </div>
-
-        <div class="hero-art" aria-hidden="true">
-          <div class="art-card art-back"></div>
-          <div class="art-card art-main">
-            <svg viewBox="0 0 320 400" class="art-svg">
-              <rect x="0" y="0" width="320" height="400" rx="14" fill="#fff"/>
-              <rect x="28" y="34" width="150" height="14" rx="4" fill="#1f2340"/>
-              <rect x="28" y="58" width="92" height="8" rx="4" fill="#b7bccb"/>
-              <rect x="26" y="88" width="190" height="16" rx="3" fill="#fde047" opacity=".55"/>
-              <g fill="#cfd3de"><rect x="28" y="92" width="182" height="7" rx="3.5"/><rect x="28" y="112" width="262" height="7" rx="3.5"/><rect x="28" y="128" width="240" height="7" rx="3.5"/><rect x="28" y="144" width="252" height="7" rx="3.5"/><rect x="28" y="160" width="160" height="7" rx="3.5"/></g>
-              <rect x="28" y="188" width="124" height="84" rx="8" fill="#eef0ff"/>
-              <g fill="#7c73ff"><rect x="44" y="238" width="14" height="22" rx="2"/><rect x="66" y="224" width="14" height="36" rx="2"/><rect x="88" y="210" width="14" height="50" rx="2"/><rect x="110" y="200" width="14" height="60" rx="2"/></g>
-              <g fill="#cfd3de"><rect x="168" y="192" width="122" height="7" rx="3.5"/><rect x="168" y="208" width="110" height="7" rx="3.5"/><rect x="168" y="224" width="118" height="7" rx="3.5"/><rect x="168" y="240" width="80" height="7" rx="3.5"/></g>
-              <ellipse cx="222" cy="244" rx="62" ry="24" fill="none" stroke="#e11d48" stroke-width="3"/>
-              <path d="M40 330c14-22 24-36 30-30s-10 34 0 30 16-26 24-20-2 20 8 18 14-12 22-10" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-              <line x1="28" y1="346" x2="170" y2="346" stroke="#b7bccb" stroke-width="1.5"/>
-              <text x="28" y="364" font-size="10" fill="#8a90a2" font-family="Inter, sans-serif">Signature</text>
-              <rect x="196" y="296" width="98" height="30" rx="6" fill="#5b50f0"/>
-              <text x="245" y="315" font-size="11" fill="#fff" text-anchor="middle" font-family="Inter, sans-serif" font-weight="600">Approved ✓</text>
-            </svg>
-          </div>
-          <div class="art-toolbar">
-            <span class="on"><svg class="i"><use href="#i-select"/></svg></span>
-            <span><svg class="i"><use href="#i-text"/></svg></span>
-            <span><svg class="i"><use href="#i-pen"/></svg></span>
-            <span><svg class="i"><use href="#i-highlight"/></svg></span>
-            <span><svg class="i"><use href="#i-signature"/></svg></span>
-          </div>
-          <div class="art-chip"><svg class="i"><use href="#i-check"/></svg>Exported · 3 pages</div>
-        </div>
+    <div class="roo-stage">
+      <div class="roo-browser">
+        <div class="roo-bar"><i></i><i></i><i></i><em>ayush4u.github.io/pdfroo — resume.pdf</em></div>
+        <img src="assets/landing/editor-edit.png" alt="The Pdfroo editor changing a line in a résumé, with the original Carlito font kept" width="2560" height="1560">
       </div>
-    </section>
-
-    <section id="features" class="section">
-      <div class="container">
-        <div class="section-head">
-          <span class="eyebrow">Everything you need</span>
-          <h2>A complete PDF toolkit, no install required</h2>
-          <p>Fast, focused tools that work the same on a phone as on a big screen.</p>
-        </div>
-        <div class="feature-grid">
-          <article class="feature"><div class="f-icon c1"><svg class="i"><use href="#i-text"/></svg></div><h3>Add &amp; edit text</h3><p>Change existing lines with automatic font matching, or type anywhere with your own size, color and weight.</p></article>
-          <article class="feature"><div class="f-icon c2"><svg class="i"><use href="#i-highlight"/></svg></div><h3>Draw &amp; highlight</h3><p>Freehand pen, translucent highlighter, rectangles, ellipses, lines and arrows — all movable and resizable.</p></article>
-          <article class="feature"><div class="f-icon c3"><svg class="i"><use href="#i-signature"/></svg></div><h3>Sign documents</h3><p>Draw your signature with a mouse, pen or finger and drop it right where it belongs.</p></article>
-          <article class="feature"><div class="f-icon c4"><svg class="i"><use href="#i-pages"/></svg></div><h3>Organize pages</h3><p>Drag to reorder, rotate, duplicate, delete, or insert blank pages in seconds.</p></article>
-          <article class="feature"><div class="f-icon c5"><svg class="i"><use href="#i-merge"/></svg></div><h3>Merge PDFs</h3><p>Append pages from other PDFs to build one tidy document, then export it.</p></article>
-          <article class="feature"><div class="f-icon c6"><svg class="i"><use href="#i-eraser"/></svg></div><h3>White-out &amp; images</h3><p>Cover mistakes with white-out and insert logos, stamps or photos (PNG / JPG).</p></article>
-        </div>
-      </div>
-    </section>
-
-    <section id="how" class="section section-alt">
-      <div class="container">
-        <div class="section-head">
-          <span class="eyebrow">How it works</span>
-          <h2>Three steps. Zero sign-ups.</h2>
-        </div>
-        <ol class="steps">
-          <li class="step"><span class="step-num">1</span><h3>Open a PDF</h3><p>Drop a file or pick one from your device. It is read locally — nothing is sent anywhere.</p></li>
-          <li class="step"><span class="step-num">2</span><h3>Make your edits</h3><p>Annotate, sign and rearrange pages with a touch-friendly editor and unlimited undo.</p></li>
-          <li class="step"><span class="step-num">3</span><h3>Download</h3><p>Everything is flattened into a standard PDF that opens in any reader.</p></li>
-        </ol>
-      </div>
-    </section>
-
-    <section id="privacy" class="section">
-      <div class="container">
-        <div class="privacy-card">
-          <div class="privacy-icon"><svg class="i"><use href="#i-cloud-off"/></svg></div>
-          <div class="privacy-copy">
-            <h2>Your files stay on your device</h2>
-            <p>Folio has no server. PDFs are opened, edited and saved with JavaScript inside your browser tab, so sensitive contracts, IDs and medical forms are never uploaded, stored or tracked. It even keeps working offline once the page is loaded.</p>
-          </div>
-          <ul class="privacy-points">
-            <li><svg class="i"><use href="#i-check"/></svg>No uploads</li>
-            <li><svg class="i"><use href="#i-check"/></svg>No accounts</li>
-            <li><svg class="i"><use href="#i-check"/></svg>No tracking</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <footer class="site-footer">
-    <div class="container footer-inner">
-      <div class="brand brand-sm"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="4" y="3" width="21" height="26" rx="5" fill="currentColor"/><path d="M10 11h10M10 16h10M10 21h6" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="25.5" cy="24.5" r="4.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/></svg></span><span class="brand-name">Folio</span></div>
-      <p>Private, client-side PDF editing. Built with pdf.js &amp; pdf-lib.</p>
-      <p class="muted">© <span id="year">2026</span> Folio · Works offline · Open source libraries</p>
+      <img class="roo" src="assets/roo.svg" alt="" width="190" height="219">
+      <div class="roo-note roo-note-font">same font as<br>the original ✓</div>
+      <div class="roo-note roo-note-local">🔒︎ still on your laptop</div>
     </div>
-  </footer>
+  </div>
+</header>
+
+<section id="why">
+  <div class="roo-wrap">
+    <div class="roo-eyebrow">Why people switch</div>
+    <h2 class="roo-h2">Three things Pdfroo is really good at</h2>
+    <p class="roo-lead">Many PDF editors cover your text with a white box and type on top in a different font. Pdfroo changes the words themselves.</p>
+    <div class="roo-cards">
+      <article class="roo-card"><div class="roo-big">Aa</div><h3>Your text, your font</h3><p>Click any line and type. Pdfroo reuses the font embedded in the PDF, keeps right-aligned dates on the right and justified paragraphs justified.</p></article>
+      <article class="roo-card"><div class="roo-big roo-dev">हिंदी</div><h3>Made for India</h3><p>Hindi, Bengali, Tamil, Telugu and more come out as proper Unicode — copy, search and screen readers all work. Old Kruti Dev files too.</p></article>
+      <article class="roo-card"><div class="roo-big">🔒︎</div><h3>Stays on your device</h3><p>No upload, no account, no “we delete files after 2 hours”. The file is opened, edited and saved by your own browser.</p></article>
+    </div>
+    <div class="roo-everyday"><span>✍️ Sign</span><span>🖍️ Highlight &amp; draw</span><span>➕ Add text &amp; images</span><span>📄 Reorder, rotate &amp; merge pages</span><span>☑️ Fill forms</span><span>🗜️ Compress for upload limits</span><span>🌙 Dark mode editor</span></div>
+  </div>
+</section>
+
+<section class="roo-langs" id="languages">
+  <div class="roo-wrap roo-split">
+    <div>
+      <div class="roo-eyebrow">भारतीय भाषाएँ · Indian languages</div>
+      <h2 class="roo-h2">Hindi that stays Hindi.</h2>
+      <p class="roo-lead">Fix a typo in a Hindi notice, a Tamil form or a Bengali letter. Pdfroo shapes every conjunct and matra properly, and the result is real text you can search and copy — not a picture.</p>
+      <div class="roo-scripts" lang="mul">
+        <span lang="hi">हिंदी</span><span lang="mr">मराठी</span><span lang="bn">বাংলা</span><span lang="ta">தமிழ்</span><span lang="te">తెలుగు</span><span lang="gu">ગુજરાતી</span><span lang="kn">ಕನ್ನಡ</span><span lang="ml">മലയാളം</span><span lang="pa">ਪੰਜਾਬੀ</span><span lang="or">ଓଡ଼ିଆ</span>
+      </div>
+      <ul class="roo-check">
+        <li>Old Kruti Dev / Chanakya files converted to Unicode — and you confirm before anything changes</li>
+        <li>Mixed lines like “कुल राशि ₹ 12,500” keep Latin digits and the ₹ sign</li>
+      </ul>
+    </div>
+    <div class="roo-phone"><img src="assets/landing/hindi-phone.png" alt="Editing a Hindi line on a phone in Pdfroo" width="750" height="1624" loading="lazy"></div>
+  </div>
+</section>
+
+<section class="roo-find" id="find">
+  <div class="roo-wrap roo-split roo-flip">
+    <div class="roo-shot"><img src="assets/landing/find-desktop.png" alt="Find and replace results across four PDFs, grouped by file" width="1440" height="900" loading="lazy"></div>
+    <div>
+      <div class="roo-eyebrow">New</div>
+      <h2 class="roo-h2">Find &amp; replace across many PDFs</h2>
+      <span class="roo-badge-local">🔒︎ 100% on your device</span>
+      <p class="roo-lead">Changed your company name? Wrong date in 20 letters? Drop in all the PDFs, type what to find and what to replace it with, untick anything you want to keep, and download them all as one zip.</p>
+      <ul class="roo-check">
+        <li>Every match listed by file and page, with a preview</li>
+        <li>Replacements use the original font, just like a manual edit</li>
+        <li>Scanned pages are flagged, never silently skipped</li>
+      </ul>
+      <div class="roo-soon"><span class="roo-chip">Later</span><span><b>An AI assistant, maybe.</b> We’re exploring an optional helper for rewording text — it would be off by default and only ship if it can keep the same promise: your PDF stays with you.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="promise">
+  <div class="roo-wrap">
+    <div class="roo-promise">
+      <div class="roo-pouch"><img src="assets/roo-head.svg" alt="" width="120" height="150"></div>
+      <div>
+        <h2>The pouch promise</h2>
+        <p>Pdfroo is just a web page. When you open a PDF, your browser reads it from your device, edits it in memory and saves the new copy back to your device. There’s no server to upload to — open your browser’s network tab and see for yourself.</p>
+        <p style="margin-top:22px"><button class="roo-pill roo-pill-light open-file-btn" type="button">Open a PDF</button></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="roo-wrap">
+    <span>© <span id="year">2026</span> Pdfroo · free &amp; open source · built with pdf.js &amp; pdf-lib</span>
+    <span>Fonts: Fredoka, Nunito, Baloo 2, Noto Sans (SIL OFL)</span>
+  </div>
+</footer>
 </div>
 
 <!-- ======================= EDITOR ======================= -->
@@ -407,7 +409,7 @@
         </div>
         <button class="btn btn-primary" id="compressGo" type="button"><svg class="i"><use href="#i-compress"/></svg>Compress</button>
       </div>
-      <p class="cmp-hint">With a target, Folio lowers image quality and resolution step by step until the file fits (never above the chosen preset). Text, fonts and drawings stay sharp; form fields, links and bookmarks are kept.</p>
+      <p class="cmp-hint">With a target, Pdfroo lowers image quality and resolution step by step until the file fits (never above the chosen preset). Text, fonts and drawings stay sharp; form fields, links and bookmarks are kept.</p>
     </div>
     <div class="cmp-progress" id="compressProgress" hidden><div class="cmp-bar"><i id="compressBar"></i></div><span id="compressProgressText">Starting…</span></div>
     <div class="cmp-result" id="compressResult" hidden>
@@ -467,8 +469,8 @@
     </dl>
     <h3 class="help-sub">Good to know</h3>
     <ul class="help-notes">
-      <li><strong>Signed PDFs:</strong> any change invalidates a digital signature. Folio shows a banner and asks before your first edit. Downloading without changes keeps the original signed file.</li>
-      <li><strong>Edit text</strong> changes one line at a time in the original font when possible. Hindi and other Indian scripts (Unicode) can be edited and typed as real, searchable text. Scanned pages, invisible OCR layers, outlined or rotated text, Arabic/Hebrew/Thai lines can't be edited; use White-out + Text instead. Hindi lines whose copied text doesn't match the print, and old Kruti Dev/Chanakya lines, are checked first: Folio reads the printed line (it downloads a small text reader once) and asks you to confirm its reading when it isn't sure.</li>
+      <li><strong>Signed PDFs:</strong> any change invalidates a digital signature. Pdfroo shows a banner and asks before your first edit. Downloading without changes keeps the original signed file.</li>
+      <li><strong>Edit text</strong> changes one line at a time in the original font when possible. Hindi and other Indian scripts (Unicode) can be edited and typed as real, searchable text. Scanned pages, invisible OCR layers, outlined or rotated text, Arabic/Hebrew/Thai lines can't be edited; use White-out + Text instead. Hindi lines whose copied text doesn't match the print, and old Kruti Dev/Chanakya lines, are checked first: Pdfroo reads the printed line (it downloads a small text reader once) and asks you to confirm its reading when it isn't sure.</li>
     </ul>
   </form>
 </dialog>
@@ -502,7 +504,7 @@
     </div>
     <p class="indic-why" id="indicDlgWhy"></p>
     <figure class="indic-shot"><img id="indicDlgImg" alt="The line as printed in the PDF"><figcaption>As printed</figcaption></figure>
-    <label class="indic-label" for="indicDlgText">Folio’s best reading — fix anything that doesn’t match the printed line, then confirm</label>
+    <label class="indic-label" for="indicDlgText">Pdfroo’s best reading — fix anything that doesn’t match the printed line, then confirm</label>
     <textarea id="indicDlgText" class="indic-text" rows="2" spellcheck="false" autocomplete="off"></textarea>
     <dl class="indic-readings" id="indicDlgReadings"></dl>
     <div class="dialog-actions">

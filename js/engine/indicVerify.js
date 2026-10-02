@@ -422,7 +422,7 @@
     let worker = null, workerLangs = '', chain = Promise.resolve();
     const params = { tessedit_pageseg_mode: '7', preserve_interword_spaces: '1', user_defined_dpi: '300' };
     async function ensureWorker(langs, onStatus) {
-      if (root.location && root.location.protocol === 'file:') throw Object.assign(new Error('OCR needs Folio to be opened over http(s)'), { code: 'file' });
+      if (root.location && root.location.protocol === 'file:') throw Object.assign(new Error('OCR needs Pdfroo to be opened over http(s)'), { code: 'file' });
       if (!root.Tesseract) await env.loadScript(env.BASE + 'vendor/tesseract/tesseract.min.js');
       const T = root.Tesseract;
       if (!worker) {
