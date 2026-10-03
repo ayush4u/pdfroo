@@ -348,8 +348,8 @@
     const t = thumbList.children[i]; if (t) t.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
-  function setZoom(z, keepFit, keepEdit) {
-    if (!keepEdit) commitText();
+  function setZoom(z, keepFit) {
+    commitText();
     const vp = viewport;
     const cx = (vp.scrollLeft + vp.clientWidth / 2) / Math.max(1, vp.scrollWidth);
     const cy = (vp.scrollTop + vp.clientHeight / 2) / Math.max(1, vp.scrollHeight);
@@ -1315,7 +1315,6 @@
     inp.addEventListener('blur', () => setTimeout(() => { if (ui.lineEdit && ui.lineEdit.inp === inp && !ui.lineEdit.busy) commitLineEdit(); }, 0));
     renderOverlay(); buildPropbar();
     inp.focus({ preventScroll: true });
-    if (isPhone()) phoneFocusLine();
     const pc = ui.pendingCaret; ui.pendingCaret = null;
     const placeCaret = () => {
       if (!pc || pc.id !== ln.id || inp.value !== (opts.prefill || ln.text) || !ui.lineEdit || ui.lineEdit.inp !== inp) return false;
@@ -1421,7 +1420,7 @@
     Object.assign(inp.style, { left: box.x * z - 3 + 'px', top: box.y * z + 'px', height: Math.max(12, box.h * z) + 'px', width: Math.max(160, 0.5 * pageWrap.clientWidth) + 'px', fontSize: size + 'px', lineHeight: Math.max(12, box.h * z) + 'px', fontFamily: font ? font.family : 'sans-serif', fontWeight: font ? String(font.weight) : '400', color: (nlInfo && nlInfo.color) || '#000', background: '#f0fdf4' });
     const nl = ui.newLine = { pageId: pg.id, lineId, inp, snap, plan };
     pageWrap.append(inp); inp.focus({ preventScroll: true }); buildPropbar(); renderOverlay();
-    const close = () => { if (ui.newLine === nl) ui.newLine = null; inp.remove(); buildPropbar(); renderOverlay(); if (ui.editZoom) restoreEditZoom(); };
+    const close = () => { if (ui.newLine === nl) ui.newLine = null; inp.remove(); buildPropbar(); renderOverlay(); };
     const backToPrev = () => { close(); const d = lineData(); const p = d && d.lines.find((l) => l.id === lineId); if (p) { openLineEditor(p); } };
     const commit = async (chain) => {
       if (nl.busy) return; const text = inp.value.trim();
@@ -1462,41 +1461,10 @@
     const p = above && lineData() && lineData().lines.find((l) => l.id === above.id);
     if (p && p.editable) openLineEditor(p);
   }
-  /* phones: the edited line is readable (≥ 16 CSS px, using the editor's own zoom) and sits above the keyboard */
-  function phoneFocusLine() {
-    const le = ui.lineEdit; if (!le) return;
-    const size = le.ln.origSize || le.ln.size || 10;
-    if (size * ui.zoom < 15.5) {
-      if (!ui.editZoom) ui.editZoom = { prev: ui.zoom, fit: ui.fit };
-      const z = Math.min(5, 16 / size);
-      ui.editZoom.set = z;
-      setZoom(z, false, true); positionLineEditor();
-    }
-    scrollLineIntoView();
-  }
-  function scrollLineIntoView() {
-    const le = ui.lineEdit || ui.newLine; if (!le || !le.inp || !le.inp.isConnected) return;
-    const vv = window.visualViewport, r = le.inp.getBoundingClientRect(), vr = viewport.getBoundingClientRect();
-    const visTop = Math.max(vr.top, vv ? vv.offsetTop : 0);
-    let visBot = Math.min(vr.bottom, vv ? vv.offsetTop + vv.height : window.innerHeight);
-    if (document.body.classList.contains('kb-open') || (vv && vv.height < window.innerHeight - 80)) visBot -= propbar.offsetHeight || 48;
-    const want = visTop + Math.max(8, (visBot - visTop) * 0.3);
-    if (r.top < visTop + 4 || r.bottom > visBot - 4 || Math.abs(r.top - want) > (visBot - visTop) * 0.45) viewport.scrollTop += r.top - want;
-    if (r.left < vr.left + 4 || r.left > vr.right - 60) viewport.scrollLeft += r.left - vr.left - 12;
-  }
-  function restoreEditZoom() {
-    setTimeout(() => {
-      const ez = ui.editZoom; if (!ez || ui.lineEdit || ui.newLine || ui.addFlow || !doc) return;
-      ui.editZoom = null;
-      if (Math.abs(ui.zoom - ez.set) > 1e-6) return;               // the user zoomed by hand: keep theirs
-      if (ez.fit) setZoom(0, true); else setZoom(ez.prev);
-    }, 350);
-  }
   function closeLineEditor() {
     const le = ui.lineEdit; if (!le) return;
     ui.lineEdit = null;
     le.inp.remove();
-    if (ui.editZoom) restoreEditZoom();
     renderOverlay(); buildPropbar();
   }
   function cancelLineEdit() { if (ui.lineEdit && !ui.lineEdit.busy) closeLineEditor(); }
@@ -1763,7 +1731,6 @@
     });
   }
   function cancelAdd(silent) {
-    if (ui.editZoom) restoreEditZoom();
     const f = ui.addFlow; if (!f) return;
     ui.addFlow = null; clearTimeout(f.timer);
     if (f.panel) f.panel.remove();
@@ -2187,7 +2154,6 @@
     document.body.classList.toggle('kb-open', on);
     document.documentElement.style.setProperty('--kb', on ? inset + 'px' : '0px');
     document.documentElement.style.setProperty('--kb-bar', on ? (propbar.offsetHeight || 48) + 'px' : '0px');
-    if (isPhone() && (ui.lineEdit || ui.newLine)) { clearTimeout(ui.kbScrollT); ui.kbScrollT = setTimeout(scrollLineIntoView, 60); }
   }
   if (window.visualViewport) { window.visualViewport.addEventListener('resize', kbUpdate); window.visualViewport.addEventListener('scroll', kbUpdate); }
   document.addEventListener('focusin', () => setTimeout(kbUpdate, 50)); document.addEventListener('focusout', () => setTimeout(kbUpdate, 120));
