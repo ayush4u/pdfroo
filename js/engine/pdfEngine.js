@@ -1190,19 +1190,7 @@
     const t0 = performance.now();
     const an = await analyzePage(pg.src, pg.index);
     const ln = an.lines.find((l) => l.id === lineId);
-    if (!ln) {
-      // a line added with "Add like this": retype it in the same font plan; empty text removes it
-      const ie = (pg.textEdits || []).find((x) => x.lineId === lineId && x.insert && x.kind === 'text');
-      if (!ie) return { ok: false, message: 'That line could not be found.' };
-      const text = String(newText).replace(/[\r\n\t]+/g, ' ').replace(/\s+$/, '');
-      if (!text.trim()) { pg.textEdits = pg.textEdits.filter((x) => x !== ie); return { ok: true, edit: null, message: 'Added line removed.' }; }
-      const src = an.lines.find((l) => l.id === ie.srcLineId);
-      const fp = src && await fontPlanFor(an, src, text);
-      if (!fp) return { ok: false, message: 'Some of these characters aren’t available in the matching fonts.' };
-      Object.assign(ie, { text, tier: fp.tier, label: fp.label, t1: fp.t1, sub: fp.sub, newW: Math.round(fp.w * 1000) / 1000 });
-      const over = await columnOverflow(state, pageIndex, lineId);
-      return { ok: true, edit: ie, message: 'Text replaced.', overflow: over };
-    }
+    if (!ln) return { ok: false, message: 'That line could not be found.' };
     if (!ln.editable) return { ok: false, message: ln.reason };
     const V = await verifyLib();
     let font = null;
@@ -1637,6 +1625,31 @@
     };
   }
 
+  /** The clip rectangle (PDF space, grown clips included) the line's own text runs are drawn in, or null. */
+  async function lineClip(pg, ln) {
+    const geo = await pageGeometry(pg.src, pg.index), pb = probeBox(ln), cy = (pb[1] + pb[3]) / 2;
+    const t = (geo.texts || []).find((q) => !q.hidden && Math.abs((q.box[1] + q.box[3]) / 2 - cy) < 0.45 * ln.size && Math.min(q.box[2], pb[2]) - Math.max(q.box[0], pb[0]) > 0);
+    const c = t && geo.scan.textClip[t.i];
+    const H = geo.scan && ln.size ? 0 : 0; void H;
+    return c ? [c[0], c[1] + RF().growFor(c, pg.shifts), c[2], c[3]] : null;
+  }
+  /** Remove a line added with "Add like this". When it is the last text line of its insert group, the whole group goes
+   *  (copied bullet / divider too) and the page shift that made room for it is taken back, so what's below moves up. */
+  function removeInsertedLine(pg, ie) {
+    const group = ie.group;
+    const rest = (pg.textEdits || []).filter((x) => x !== ie && x.insert && x.group === group && x.kind === 'text');
+    const si = group ? (pg.shifts || []).findIndex((sh) => sh.group === group) : -1;
+    if (rest.length || si < 0) { pg.textEdits = pg.textEdits.filter((x) => x !== ie); return { ok: true, edit: null, message: 'Added line removed.' }; }
+    const sh = pg.shifts[si];
+    pg.shifts = pg.shifts.filter((x, k) => k !== si && !(x.fitOf && x.fitOf === group));
+    const back = new Map((sh.movedLines || []).map((m) => [m.id, m.dy]));
+    pg.textEdits = pg.textEdits.filter((x) => !(x.insert && x.group === group)).map((x) => {
+      if (!back.has(x.lineId) || !x.move) return x;
+      const dy = Math.round((x.move.dy - back.get(x.lineId)) * 1000) / 1000;
+      return Object.assign({}, x, { move: { dx: x.move.dx, dy } });
+    });
+    return { ok: true, edit: null, removedGroup: true, message: 'Added line removed — what was below moved back up.' };
+  }
   /**
    * Plan + apply an edit of line `lineId` on page `pageIndex` to `newText`.
    * Mutates state.pages[pageIndex].textEdits; returns { ok, edit?, message? }.
@@ -1647,7 +1660,21 @@
     if (!pg || pg.src == null) return { ok: false, message: 'This page has no editable text.' };
     const an = await analyzePage(pg.src, pg.index);
     const ln = an.lines.find((l) => l.id === lineId);
-    if (!ln) return { ok: false, message: 'That line could not be found.' };
+    if (!ln) {
+      // a line added with "Add like this": retype it in the same font plan; empty text removes it (and, when it was the
+      // only line of its insert, the content below moves back up)
+      const ie = (pg.textEdits || []).find((x) => x.lineId === lineId && x.insert && x.kind === 'text');
+      if (!ie) return { ok: false, message: 'That line could not be found.' };
+      const text = String(newText).replace(/[\r\n\t]+/g, ' ').replace(/\s+$/, '');
+      if (!text.trim()) return removeInsertedLine(pg, ie);
+      const src = an.lines.find((l) => l.id === ie.srcLineId);
+      const fp = src && await fontPlanFor(an, src, text);
+      if (!fp) return { ok: false, message: 'Some of these characters aren’t available in the matching fonts.' };
+      const i = pg.textEdits.indexOf(ie);
+      pg.textEdits = pg.textEdits.slice(); pg.textEdits[i] = Object.assign({}, ie, { text, tier: fp.tier, label: fp.label, t1: fp.t1, sub: fp.sub, newW: Math.round(fp.w * 1000) / 1000 });
+      const over = await columnOverflow(state, pageIndex, lineId);
+      return { ok: true, edit: pg.textEdits[i], message: 'Text replaced.', overflow: over };
+    }
     if (!ln.editable) return { ok: false, message: ln.reason };
     if (ln.verify && !(opts && opts.verified)) return { ok: false, message: 'This line’s text layer doesn’t match what’s printed, so its reading needs checking first — click the line to check it.' };
     const text = String(newText).replace(/[\r\n\t]+/g, ' ').replace(/\s+$/, '');
@@ -1808,7 +1835,16 @@
     if (!v.ok) return fail('Pdfroo couldn’t apply this edit cleanly, so it was not made.');
     let message = (moveOnly ? 'Moved · redrawn in ' : '') + e.label + fitNote;
     if (e.removal === 'cover') message += ' · original text covered (it stays in the file underneath)';
-    return { ok: true, edit: e, message };
+    // a narrow column / sidebar drawn inside a clip: text past the clip edge would be cut off, never silently
+    let clipped = false;
+    try {
+      const c = await lineClip(pg, ln);
+      if (c && !moveOnly) {
+        const x0 = ln.x + (e.move ? e.move.dx : 0) + (e.alignDx || 0), x1 = x0 + (e.newW || 0) / (e.fit || 1);
+        if (x1 > c[2] + 0.5 || x0 < c[0] - 0.5) { clipped = true; message = 'This text is wider than its column’s visible area, so its end would be cut off — shorten it or use Wrap.'; }
+      }
+    } catch (err) { /* advisory */ }
+    return { ok: true, edit: e, message, clipped };
   }
 
   /**
@@ -4092,12 +4128,12 @@
       if (e) { const ne = Object.assign({}, e, { move: { dx: (e.move ? e.move.dx : 0), dy: r3((e.move ? e.move.dy : 0) + dy + extra) } }); pg.textEdits[pg.textEdits.indexOf(e)] = ne; }
     }
     // 2. vector paths, images, links: recorded as a page shift, applied to the content stream at render / export
-    if (!flow) pg.shifts = (pg.shifts || []).concat(fitShifts || [], [Object.assign({ rects: plan.region.rects, dy: r3(dy), tol: 1 }, plan.grow ? { grow: plan.grow } : {})]);
+    const groupId = uid('ins');
+    if (!flow) pg.shifts = (pg.shifts || []).concat((fitShifts || []).map((f) => Object.assign({}, f, { fitOf: groupId })), [Object.assign({ rects: plan.region.rects, dy: r3(dy), tol: 1, group: groupId, movedLines: plan.moving.lines.filter((id) => pg.textEdits.some((x) => x.lineId === id)).map((id) => ({ id, dy: r3(dy) })) }, plan.grow ? { grow: plan.grow } : {})]);
     // 3. annotations added in Pdfroo
     const ids = new Set(flow ? [] : plan.moving.app);
     pg.annots = (pg.annots || []).map((a) => { if (!ids.has(a.id)) return a; const c = JSON.parse(JSON.stringify(a)); const ex = fitShifts ? RF().shiftFor(appAnnotBox(a, view), fitShifts) : 0; moveAppAnnot(c, -(dy + ex)); return c; });
     // 4. the new lines
-    const groupId = uid('ins');
     for (const nl of plan.newLines) {
       const src = an.lines.find((l) => l.id === nl.srcId) || currentLines(an, pg).find((l) => l.id === nl.srcId);
       if (!src) continue;
@@ -4180,6 +4216,7 @@
     const sameSize = st.col.filter((r) => Math.abs(r.size - row.size) < 0.15 * row.size && r !== row);
     let colR = sameSize.length ? Math.max(...sameSize.map((r) => r.x1)) : st.x1 - 1;
     colR = Math.min(colR, st.x1 - 1);
+    { const c = await lineClip(pg, ln).catch(() => null); if (c && c[2] - c[0] < 0.9 * (an.page.view[2] - an.page.view[0])) colR = Math.min(colR, c[2] - 0.5); }
     const x = lnX + (e.move ? e.move.dx : 0);
     const right = x + (e.newW || 0) * (1 / (e.fit || 1));
     if (right <= colR + 1.5 || (e.align && e.align !== 'left' && e.align !== 'justify')) return { ok: false, message: '', fits: true };

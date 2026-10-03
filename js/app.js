@@ -497,6 +497,7 @@
     }
     if (ui.tool === 'edittext') drawTextLines(pg);
     if (ui.addFlow) drawAddPreview(pg);
+    else if (ui.newLine && ui.newLine.plan) drawAddPreview(pg, ui.newLine);
     if (ui.block && ui.tool === 'edittext') drawBlockPreview(pg);
     if (ui.drag && ui.drag.temp) {
       const n = annotNode(ui.drag.temp, false);
@@ -1299,8 +1300,11 @@
       E.ensureScriptFonts(inp.value, ln.bold).then(() => { if (ui.lineEdit && ui.lineEdit.inp === inp) positionLineEditor(); }).catch((err) => console.warn(err));
     });
     inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); commitLineEdit(); }
+      const mod = e.ctrlKey || e.metaKey;
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); enterInLine(e.shiftKey); }
       else if (e.key === 'Escape') { e.preventDefault(); cancelLineEdit(); }
+      else if ((e.key === 'Backspace' || e.key === 'Delete') && inp.value === '' && ln.inserted) { e.preventDefault(); removeAddedLine(ln); }
+      else if (mod && !e.altKey && lineShortcut(e.key.toLowerCase(), e.shiftKey)) { e.preventDefault(); }
       else if (e.altKey && /^Arrow/.test(e.key) && ln.movable) {
         e.preventDefault();
         const st = e.shiftKey ? NUDGE_BIG : NUDGE;
@@ -1352,6 +1356,111 @@
       fontSynthesis: st.bold != null || st.italic != null ? 'weight style' : '',   // preview a new weight / slant
     });
   }
+  /** Word-style shortcuts while a line is being edited (Ctrl/⌘ + B, I, L, E, R, J, ], [). */
+  function lineShortcut(k, shift) {
+    const le = ui.lineEdit; if (!le || !le.info) return false;
+    const st = le.style, info = le.info;
+    const done = () => { positionLineEditor(); buildPropbar(); return true; };
+    if (k === 'b' && info.canBold) { st.bold = !(st.bold != null ? st.bold : !!le.ln.bold); return done(); }
+    if (k === 'i' && info.canItalic) { st.italic = !(st.italic != null ? st.italic : !!le.ln.italic); return done(); }
+    const al = { l: 'left', e: 'center', r: 'right', j: 'justify' }[k];
+    if (al && !shift) { if (st.align === al) delete st.align; else st.align = al; return done(); }
+    if (k === ']' || k === '[') { const b = propbar.querySelector('.line-size button:' + (k === ']' ? 'last-child' : 'first-child')); if (b) b.click(); return true; }
+    return false;
+  }
+  /** Enter: a new line below (same font, size, spacing; what's below moves down) with the caret in it.
+   *  Shift+Enter: break the line at the caret, the rest continues on a new line of the same paragraph. */
+  async function enterInLine(shift) {
+    const le = ui.lineEdit; if (!le || le.busy) return;
+    const pg = doc.pages.find((p) => p.id === le.pageId), pi = doc.pages.indexOf(pg);
+    const v = le.inp.value, caret = le.inp.selectionStart == null ? v.length : le.inp.selectionStart;
+    const before = v.slice(0, caret).replace(/\s+$/, ''), after = v.slice(caret).replace(/^\s+/, '');
+    const lineId = le.ln.id, font = le.font;
+    let aft = after;
+    if (!before || !shift) aft = '';                             // Enter: the whole line stays, a new line below; Shift+Enter splits at the caret
+    const snap = snapshot(), h0 = ui.history.length;
+    if (aft) le.inp.value = before;
+    const cres = await commitLineEdit({ quiet: true });
+    if (cres && cres.ok && cres.edit) {                          // too long for its column: offer Wrap instead of a new line
+      let w = null; try { w = await E.planWrapEdit(doc, pi, lineId); } catch (err) { /* ignore */ }
+      if (cres.clipped || (w && w.ok)) { offerWrap(pg, lineId); return; }
+    }
+    if (!aft) { startNewLine(pg, lineId, font, null); return; }
+    if (ui.history.length > h0) ui.history.pop();               // the split is one undo step
+    const after2 = aft;
+    let plan = null;
+    try {
+      plan = await E.planInsert(doc, pi, lineId, shift ? 'wrap' : 'line', after2, shift ? { srcLineId: lineId } : {});
+      if (shift && (!plan || !plan.ok)) plan = await E.planInsert(doc, pi, lineId, 'line', after2);
+    } catch (err) { console.error(err); plan = { ok: false, message: 'Pdfroo couldn’t work out where the new line goes.' }; }
+    if (!plan || !plan.ok) { restore(snap); ui.dirty = true; renderPage(); toast((plan && plan.message) || 'There’s no room for a new line here.', 'error'); return; }
+    const res = await E.applyInsert(doc, pi, plan);
+    if (!res.ok) { restore(snap); renderPage(); toast(res.message, 'error'); return; }
+    pushHistory(snap); renderPage(); refreshThumb(pi); updateChrome();
+    const nl = await newestInserted(pg, after2);
+    if (nl) { ui.pendingCaret = null; openLineEditor(nl); if (ui.lineEdit) ui.lineEdit.inp.setSelectionRange(0, 0); }
+  }
+  async function newestInserted(pg, text) {
+    await loadTextLines(true);
+    const d = lineData(); if (!d) return null;
+    const c = d.lines.filter((l) => l.inserted && l.text === text);
+    return c.length ? c[c.length - 1] : null;
+  }
+  /** A new, still-empty line under `lineId`: an input where the line will go; the line (and the move of what's below)
+   *  is made when the first text is committed. Backspace / Esc on it gives the caret back to the line above. */
+  async function startNewLine(pg, lineId, font, snap) {
+    const pi = doc.pages.indexOf(pg);
+    let plan;
+    try { plan = await E.planInsert(doc, pi, lineId, 'line', 'Xg'); } catch (err) { console.error(err); plan = { ok: false, message: 'Pdfroo couldn’t work out where the new line goes.' }; }
+    if (!plan || !plan.ok || !plan.preview || !plan.preview.added || !plan.preview.added.length) { toast((plan && plan.message) || 'There’s no room for a new line here.', 'error'); return; }
+    const box = plan.preview.added[0], nlInfo = plan.newLines && plan.newLines[0], z = ui.zoom;
+    const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'nl-editor'; inp.placeholder = 'New line';
+    inp.setAttribute('aria-label', 'Type the new line'); inp.setAttribute('enterkeyhint', 'enter'); inp.autocomplete = 'off';
+    const size = (nlInfo ? nlInfo.size : box.h) * z;
+    Object.assign(inp.style, { left: box.x * z - 3 + 'px', top: box.y * z + 'px', height: Math.max(12, box.h * z) + 'px', width: Math.max(160, 0.5 * pageWrap.clientWidth) + 'px', fontSize: size + 'px', lineHeight: Math.max(12, box.h * z) + 'px', fontFamily: font ? font.family : 'sans-serif', fontWeight: font ? String(font.weight) : '400', color: (nlInfo && nlInfo.color) || '#000', background: '#f0fdf4' });
+    const nl = ui.newLine = { pageId: pg.id, lineId, inp, snap, plan };
+    pageWrap.append(inp); inp.focus({ preventScroll: true }); buildPropbar(); renderOverlay();
+    const close = () => { if (ui.newLine === nl) ui.newLine = null; inp.remove(); buildPropbar(); renderOverlay(); };
+    const backToPrev = () => { close(); const d = lineData(); const p = d && d.lines.find((l) => l.id === lineId); if (p) { openLineEditor(p); } };
+    const commit = async (chain) => {
+      if (nl.busy) return; const text = inp.value.trim();
+      if (!text) { close(); return; }
+      nl.busy = true; inp.readOnly = true;
+      let p2;
+      try { p2 = await E.planInsert(doc, pi, lineId, 'line', text); } catch (err) { console.error(err); p2 = { ok: false, message: 'Pdfroo couldn’t add this line.' }; }
+      if (!p2.ok) { nl.busy = false; inp.readOnly = false; toast(p2.message || 'There’s no room for this line.', 'error'); return; }
+      const r = await E.applyInsert(doc, pi, p2);
+      close();
+      if (!r.ok) { toast(r.message, 'error'); return; }
+      pushHistory(snap || snapshot()); renderPage(); refreshThumb(pi); updateChrome();
+      const added = await newestInserted(pg, text);
+      if (added && chain) startNewLine(pg, added.id, font, snapshot());
+      else if (added && chain === false) { openLineEditor(added); }
+    };
+    inp.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); commit(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); backToPrev(); }
+      else if (e.key === 'Backspace' && !inp.value) { e.preventDefault(); backToPrev(); }
+    });
+    inp.addEventListener('blur', () => setTimeout(() => { if (ui.newLine === nl && !nl.busy) commit(); }, 0));
+  }
+  /** Backspace / Delete on an empty line added in this session: remove it, move what's below back up, caret to the line above. */
+  async function removeAddedLine(ln) {
+    const le = ui.lineEdit; if (!le || le.busy) return;
+    const pg = doc.pages.find((p) => p.id === le.pageId), pi = doc.pages.indexOf(pg);
+    const d = lineData();
+    const above = d && d.lines.filter((l) => l.id !== ln.id && l.y < ln.y - 0.3 * ln.h && l.x < ln.x + ln.w && l.x + l.w > ln.x).sort((a, b) => b.y - a.y)[0];
+    le.busy = true;
+    const snap = snapshot();
+    let res; try { res = await E.editTextLine(doc, pi, ln.id, ''); } catch (err) { console.error(err); res = { ok: false, message: 'Something went wrong.' }; }
+    closeLineEditor();
+    if (!res.ok) { toast(res.message, 'error'); return; }
+    pushHistory(snap); renderPage(); refreshThumb(pi); updateChrome();
+    await loadTextLines(true);
+    const p = above && lineData() && lineData().lines.find((l) => l.id === above.id);
+    if (p && p.editable) openLineEditor(p);
+  }
   function closeLineEditor() {
     const le = ui.lineEdit; if (!le) return;
     ui.lineEdit = null;
@@ -1359,7 +1468,8 @@
     renderOverlay(); buildPropbar();
   }
   function cancelLineEdit() { if (ui.lineEdit && !ui.lineEdit.busy) closeLineEditor(); }
-  async function commitLineEdit() {
+  async function commitLineEdit(o) {
+    const quiet = o && o.quiet;
     const le = ui.lineEdit; if (!le || le.busy) return;
     const text = le.inp.value;
     const pg = doc && doc.pages.find((p) => p.id === le.pageId);
@@ -1377,13 +1487,14 @@
     if (res.ok) {
       pushHistory(snap);
       ui.lastEdit = res.edit ? { pageId: pg.id, label: res.edit.label, tier: res.edit.tier } : null;
-      toast(res.message, 'ok');
+      if (res.clipped) toast(res.message, 'error'); else toast(res.message, 'ok');
       const i = doc.pages.indexOf(pg);
       if (i === ui.current) renderPage();
       refreshThumb(i);
-      if (res.edit) offerWrap(pg, le.ln.id);
+      if (res.edit && !quiet) offerWrap(pg, le.ln.id);
     } else toast(res.message, 'error');
     buildPropbar(); updateChrome();
+    return res;
   }
   /* ---------------- "Add like this": new line / bullet / section, with the content below moved down ---------------- */
   // ui.addFlow = { mode, pageId, anchorId, region, plan, panel, inputs, snapBefore, wrap, mergeSnap }
@@ -1403,7 +1514,7 @@
     const pg = curPage(); if (!pg || ui.addFlow) return;
     const o = addOptionsFor(pg, lineId);
     if (!o || !(o.line || o.bullet || o.section)) return;
-    const trig = tbBtn('i-plus', 'Add like this', null, 'add-trigger', 'Add');
+    const trig = tbBtn('i-plus', 'Add a line, bullet or section like this one (Enter adds a line below)', null, 'add-trigger', 'Add');
     inner.appendChild(popover('add', trig, (pop) => {
       pop.classList.add('tb-menu', 'add-like'); pop.setAttribute('aria-label', 'Add like this');
       [['line', 'Line below', 'i-plus'], ['bullet', 'Bullet below', 'i-plus'], ['section', 'Section like this', 'i-layers']].forEach(([m, t, ic]) => {
@@ -1420,7 +1531,7 @@
   function startAdd(mode, anchorId, extra) {
     const pg = curPage(); if (!pg) return;
     cancelAdd(true);
-    if (ui.lineEdit) closeLineEditor();
+    const hadEditor = ui.lineEdit;
     ui.runSel = null;
     const f = ui.addFlow = Object.assign({ mode, pageId: pg.id, anchorId, region: null, plan: null, token: 0 }, extra || {});
     const panel = document.createElement('div'); panel.className = 'add-panel' + (isPhone() ? ' sheet' : ''); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', ADD_LABELS[mode]);
@@ -1451,8 +1562,10 @@
     });
     document.body.appendChild(panel);
     positionAddPanel();
-    buildPropbar(); renderOverlay();
-    if (f.inputs[0]) setTimeout(() => f.inputs[0].focus({ preventScroll: !isPhone() }), 0);
+    // focus moves straight from the line to the sheet's input (the phone keyboard stays up), then the line editor goes
+    if (f.inputs[0]) f.inputs[0].focus({ preventScroll: true });
+    if (hadEditor && ui.lineEdit === hadEditor) closeLineEditor();
+    buildPropbar(); renderOverlay(); kbUpdate();
     planAdd();
   }
   function positionAddPanel() {
@@ -1546,8 +1659,8 @@
       });
     }).catch((err) => console.warn(err));
   }
-  function drawAddPreview(pg) {
-    const f = ui.addFlow; if (!f || f.pageId !== pg.id || !f.plan || !f.plan.preview) return;
+  function drawAddPreview(pg, fo) {
+    const f = fo || ui.addFlow; if (!f || f.pageId !== pg.id || !f.plan || !f.plan.preview) return;
     const p = f.plan, pr = p.preview, z = ui.zoom, ds = E.displaySize(pg);
     const g = svg('g', { class: 'reflow-preview' + (p.uncertain ? ' uncertain' : '') + (p.ok ? '' : ' blocked') }, overlay);
     const R = pr.region, yBot = Math.min(ds.h, R.yBot);
@@ -1726,21 +1839,21 @@
     const chip = fontChip((info.kind === 'item' ? 'Bullet' : info.heading ? 'Heading' : 'Paragraph') + ` · ${info.rows} line${info.rows === 1 ? '' : 's'}`); chip.classList.add('block-chip');
     inner.appendChild(chip);
     inner.appendChild(sep());
-    const up = tbBtn(null, 'Move up (swap with the block above)', () => stepBlock(-1), 'blk-up', '↑');
-    const dn = tbBtn(null, 'Move down (swap with the block below)', () => stepBlock(1), 'blk-down', '↓');
-    const del = tbBtn('i-trash', 'Delete this block — what’s below moves up', () => deleteBlockPlan(), 'blk-del danger');
+    const up = tbBtn(null, 'Move up — swap with the block above (↑)', () => stepBlock(-1), 'blk-up', '↑');
+    const dn = tbBtn(null, 'Move down — swap with the block below (↓)', () => stepBlock(1), 'blk-down', '↓');
+    const del = tbBtn('i-trash', 'Delete this block — what’s below moves up (Delete)', () => deleteBlockPlan(), 'blk-del danger', null, 'Delete');
     if (b.del) del.classList.add('active');
     inner.append(up, dn, del);
     if (b.plan && b.plan.ok) {
       inner.appendChild(sep());
       if (!isPhone()) inner.appendChild(hint(b.del ? 'i-trash' : 'i-layers', b.plan.summary));
-      const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'btn btn-primary tb-apply blk-apply'; ok.textContent = b.del ? 'Delete' : 'Apply'; ok.title = b.plan.summary;
+      const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'btn btn-primary tb-apply blk-apply'; ok.textContent = b.del ? 'Delete' : 'Apply'; ok.title = b.plan.summary + ' (Enter)';
       ok.addEventListener('click', () => applyBlockUI());
-      const cx = tbBtn('i-x', 'Cancel this change', () => resetBlock(), 'blk-cancel');
+      const cx = tbBtn('i-x', 'Cancel this change (Esc)', () => resetBlock(), 'blk-cancel');
       inner.append(ok, cx);
     } else {
       inner.appendChild(sep());
-      inner.appendChild(tbBtn('i-check', 'Done — deselect the block', () => cancelBlock(), 'blk-done'));
+      inner.appendChild(tbBtn('i-check', 'Done — deselect the block (Esc)', () => cancelBlock(), 'blk-done', null, 'Done'));
     }
   }
   function drawBlockPreview(pg) {
@@ -1835,7 +1948,7 @@
         }));
       };
       const blockBtn = (lineId) => {
-        const b = tbBtn(null, 'Select paragraph — move or delete the whole bullet / paragraph (or long-press a line)', async () => { if (ui.lineEdit) await commitLineEdit(); selectBlock(lineId); }, 'sel-block', '¶');
+        const b = tbBtn(null, 'Select paragraph — move or delete the whole bullet / paragraph (or long-press a line)', async () => { if (ui.lineEdit) await commitLineEdit(); selectBlock(lineId); }, 'sel-block', '¶', 'Paragraph');
         inner.appendChild(b);
       };
       if (ui.block && ui.block.pageId === curPage().id) blockTools(inner, sep, hint);
@@ -1936,7 +2049,7 @@
     inner.appendChild(sep());
     const cur = () => st.size || le.ln.origSize || le.ln.size;
     const g = document.createElement('div'); g.className = 'stepper line-size'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Font size'); g.title = 'Font size';
-    g.innerHTML = `<button type="button" class="icon-btn" aria-label="Decrease font size" title="Smaller"><svg class="i"><use href="#i-minus"/></svg></button><output aria-live="polite"></output><button type="button" class="icon-btn" aria-label="Increase font size" title="Bigger"><svg class="i"><use href="#i-plus"/></svg></button>`;
+    g.innerHTML = `<button type="button" class="icon-btn" aria-label="Decrease font size" title="Smaller (Ctrl+[)"><svg class="i"><use href="#i-minus"/></svg></button><output aria-live="polite"></output><button type="button" class="icon-btn" aria-label="Increase font size" title="Bigger (Ctrl+])"><svg class="i"><use href="#i-plus"/></svg></button>`;
     g.querySelector('output').textContent = (Math.round(cur() * 2) / 2).toString();
     const stepSize = (d) => { const v = Math.max(4, Math.min(144, Math.round((cur() + d) * 2) / 2)); st.size = Math.abs(v - (le.ln.origSize || le.ln.size)) < 0.01 ? null : v; if (st.size == null) delete st.size; changed(); };
     keep(g.children[0]).addEventListener('click', () => stepSize(-0.5));
@@ -1947,7 +2060,8 @@
       const val = st[key] != null ? st[key] : !!(le.ln[key]);
       b.setAttribute('aria-pressed', String(!!val)); b.setAttribute('aria-label', label);
       b.disabled = !can;
-      b.title = !can ? `${label} isn’t available for this font` : same ? `${label} (same font family, already in this PDF)` : `${label} (uses a matching bundled font face)`;
+      const sc = key === 'bold' ? ' (Ctrl+B)' : key === 'italic' ? ' (Ctrl+I)' : '';
+      b.title = !can ? `${label} isn’t available for this font` : same ? `${label}${sc} — same font family, already in this PDF` : `${label}${sc} — uses a matching bundled font face`;
       b.innerHTML = icon;
       keep(b).addEventListener('click', () => { const v = !(st[key] != null ? st[key] : !!le.ln[key]); st[key] = v; changed(); });
       return b;
@@ -1961,7 +2075,7 @@
     const curA = st.align || 'auto';
     const AL = [['auto', 'Auto', 'Keep the line’s own alignment (detected: ' + info.align + ')', 'A'], ['left', 'Left', 'Align left (grow to the right)', 'L'], ['center', 'Centre', 'Centre (grow both ways)', 'C'], ['right', 'Right', 'Align right (grow to the left)', 'R'], ['justify', 'Justify', 'Justify (keep the line’s width)', 'J']];
     const curDef = AL.find((a) => a[0] === curA);
-    const at = tbBtn(null, 'Alignment: ' + curDef[1], null, 'align-trigger', alignGlyph(curA));
+    const at = tbBtn(null, 'Alignment: ' + curDef[1] + ' (Ctrl+L / E / R / J)', null, 'align-trigger', alignGlyph(curA), 'Align');
     inner.appendChild(popover('align', at, (pop) => {
       pop.classList.add('tb-menu');
       const al = document.createElement('div'); al.className = 'seg line-align'; al.setAttribute('role', 'radiogroup'); al.setAttribute('aria-label', 'Alignment');
@@ -1982,12 +2096,13 @@
     return `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>${v === 'auto' ? '<circle cx="19" cy="18" r="3" fill="currentColor"/>' : ''}</svg>`;
   }
   /* ---------- compact toolbar pieces: icon buttons, popovers ---------- */
-  function tbBtn(icon, label, fn, cls, glyph) {
+  function tbBtn(icon, label, fn, cls, glyph, text) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'icon-btn tb-btn' + (cls ? ' ' + cls : '');
     b.innerHTML = icon ? `<svg class="i"><use href="#${icon}"/></svg>` : '';
     if (glyph) { if (/^</.test(glyph)) b.insertAdjacentHTML('beforeend', glyph); else { const sp = document.createElement('span'); sp.className = 'tb-glyph'; sp.textContent = glyph; b.appendChild(sp); } }
     if (icon && glyph && !/^</.test(glyph)) b.classList.add('with-text');
-    b.setAttribute('aria-label', label); b.title = label;
+    if (text) { const t = document.createElement('span'); t.className = 'tb-label'; t.textContent = text; b.appendChild(t); b.classList.add('labelled'); }
+    b.setAttribute('aria-label', label.replace(/ \(.*\)$/, '')); b.title = label;
     b.addEventListener('mousedown', (e) => e.preventDefault());
     if (fn) b.addEventListener('click', fn);
     return b;
@@ -2029,10 +2144,23 @@
     if (ui.openPop && ui.openPop !== except) ui.openPop = null;
   }
   document.addEventListener('pointerdown', (e) => { if (ui.openPop && !e.target.closest('.tb-pop, .tb-pop-trigger')) closePops(); }, true);
+  // toolbar / popover buttons never take focus from the line being typed in (a normal tap works, the keyboard stays)
+  propbar.addEventListener('pointerdown', (e) => { if ((ui.lineEdit || ui.newLine) && e.target.closest('button, .swatch, label')) e.preventDefault(); });
+  /* phone keyboard: keep the editing bar (and the add sheet) docked right above it, like Google Docs */
+  function kbUpdate() {
+    const vv = window.visualViewport; if (!vv) return;
+    const inset = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+    const on = inset > 80 && isPhone() && !!(ui.lineEdit || ui.newLine || ui.addFlow || (document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && editor.contains(document.activeElement)));
+    document.body.classList.toggle('kb-open', on);
+    document.documentElement.style.setProperty('--kb', on ? inset + 'px' : '0px');
+    document.documentElement.style.setProperty('--kb-bar', on ? (propbar.offsetHeight || 48) + 'px' : '0px');
+  }
+  if (window.visualViewport) { window.visualViewport.addEventListener('resize', kbUpdate); window.visualViewport.addEventListener('scroll', kbUpdate); }
+  document.addEventListener('focusin', () => setTimeout(kbUpdate, 50)); document.addEventListener('focusout', () => setTimeout(kbUpdate, 120));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.openPop) { closePops(); e.stopPropagation(); } }, true);
   window.addEventListener('resize', () => closePops());
   function movePopover(onMove, label, extra) {
-    const trig = tbBtn(null, 'Move — nudge the selection', null, 'move-trigger', '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+    const trig = tbBtn(null, 'Move — nudge the selection (Alt+arrow keys, Shift for bigger steps)', null, 'move-trigger', '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>', 'Move');
     return popover('move', trig, (pop) => { pop.classList.add('tb-move'); pop.appendChild(nudgePad(onMove, label)); if (extra) extra(pop); });
   }
   const RECENT_KEY = 'pdfroo-recent-colors';
@@ -2041,7 +2169,7 @@
   /** One colour button; the palette (+ recent colours + custom picker) opens in a small popover. */
   function colorPopover(palette, current, onPick, cls) {
     const lc = String(current || '#000000').toLowerCase();
-    const trig = tbBtn(null, 'Colour', null, 'color-trigger', `<span class="tb-dot" style="background:${/^#[0-9a-f]{3,8}$/i.test(lc) ? lc : '#000'}"></span>`);
+    const trig = tbBtn(null, 'Text colour — palette, recent colours, custom', null, 'color-trigger', `<span class="tb-dot" style="background:${/^#[0-9a-f]{3,8}$/i.test(lc) ? lc : '#000'}"></span>`);
     return popover('color', trig, (pop) => {
       pop.classList.add('tb-colors');
       const pal = palette.concat(recentColors().filter((c) => !palette.includes(c))).slice(0, 9);

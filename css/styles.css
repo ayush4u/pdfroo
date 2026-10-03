@@ -1088,3 +1088,12 @@ kbd { display: inline-block; min-width: 24px; padding: 2px 7px; border-radius: 6
 @media (max-width: 640px) {
   .propbar::after { content: ""; position: sticky; right: 0; flex: none; width: 20px; align-self: stretch; margin-left: -20px; pointer-events: none; background: linear-gradient(90deg, transparent, var(--surface)); }
 }
+/* labels on the bar's main buttons (desktop), keyboard docking (phone) */
+.tb-btn.labelled { width: auto; padding: 0 10px 0 8px; gap: 6px; }
+.tb-label { font-size: 13px; font-weight: 600; white-space: nowrap; }
+@media (max-width: 640px) { .tb-label { display: none; } .tb-btn.labelled { width: 40px; padding: 0; } }
+.nl-editor::placeholder { color: rgba(22, 101, 52, .55); font-style: italic; }
+body.kb-open .propbar { position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 65; box-shadow: 0 -4px 14px rgba(0, 0, 0, .12); }
+body.kb-open .add-panel.sheet { bottom: calc(var(--kb, 0px) + var(--kb-bar, 48px) + 6px); max-height: calc(100dvh - var(--kb, 0px) - var(--kb-bar, 48px) - 70px); }
+body.kb-open .pager { display: none; }
+.nl-editor { pointer-events: none; position: absolute; z-index: 6; margin: 0; padding: 0 3px; border: 0; border-radius: 3px; outline: 2px solid #16a34a; outline-offset: 1px; box-shadow: 0 8px 24px -8px rgba(17, 20, 43, .45); white-space: pre; box-sizing: content-box; }
