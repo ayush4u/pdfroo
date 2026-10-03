@@ -153,6 +153,29 @@
    * Paths: coordinates rewritten in place (the paint op and everything else untouched). Images, forms,
    * inline images: wrapped in q [1 0 0 1 ux uy] cm … Q.
    */
+  /** A clip-only path is "grown" by later shifts that carry { grow: [clip bbox, …] }: content moved below its old bottom
+   *  edge stays visible. Only a single axis-aligned `re` clip is grown (its bottom edge in page space moves down). */
+  const sameBox = (a, b) => a && b && Math.abs(a[0] - b[0]) < 0.5 && Math.abs(a[1] - b[1]) < 0.5 && Math.abs(a[2] - b[2]) < 0.5 && Math.abs(a[3] - b[3]) < 0.5;
+  function growFor(bb, shifts) { let g = 0; for (const s of shifts || []) if (s.grow && s.grow.some((c) => sameBox(c, bb))) g += Math.min(0, s.dy); return g; }
+  function growable(it) {
+    if (!it || it.kind !== 'path' || !it.clip || it.painted) return false;
+    const m = it.ctm; if (Math.abs(m[1]) > 1e-6 || Math.abs(m[2]) > 1e-6 || !m[3]) return false;
+    const res = (it.ops || []).filter((o) => o.op === 're');
+    return res.length === 1 && (it.ops || []).every((o) => o.op === 're' || o.op === 'h' || o.op === 'W' || o.op === 'W*');
+  }
+  function clipGrowReps(scan, shifts) {
+    const reps = [];
+    for (const it of scan.items) {
+      if (!growable(it) || itemShift(it, shifts)) continue;
+      const g = growFor(it.bbox, shifts); if (!g) continue;
+      const op = it.ops.find((o) => o.op === 're');
+      const v = op.args.map(num); const du = g / it.ctm[3];      // page dy -> user dy
+      let y0 = Math.min(v[1], v[1] + v[3]), y1 = Math.max(v[1], v[1] + v[3]);
+      if (du < 0) y0 += du; else y1 += du;
+      reps.push({ s: op.s, e: op.e, text: `${fmt(v[0])} ${fmt(y0)} ${fmt(v[2])} ${fmt(y1 - y0)} re` });
+    }
+    return reps;
+  }
   function shiftReps(str, scan, dyOf) {
     const reps = [];
     for (let k = 0; k < scan.items.length; k++) {
@@ -258,5 +281,5 @@
     return out;
   }
 
-  root.FolioReflow = { scanGeometry, inRegion, shiftFor, itemShift, pathPoke, shiftReps, dropReps, clonePath, userDelta, buildRows, findGutters, columnGutters, BULLET_RE, fmt };
+  root.FolioReflow = { growFor, growable, clipGrowReps, sameBox, scanGeometry, inRegion, shiftFor, itemShift, pathPoke, shiftReps, dropReps, clonePath, userDelta, buildRows, findGutters, columnGutters, BULLET_RE, fmt };
 })(typeof window !== 'undefined' ? window : globalThis);

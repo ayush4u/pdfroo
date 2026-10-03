@@ -223,15 +223,35 @@
   });
 
   function showEditor(on) {
+    // the editor is a history entry: browser Back (and the in-app ← arrow) returns to Pdfroo's home page
+    if (on && editor.hidden && !(history.state && history.state.pdfrooEditor)) { try { history.pushState({ pdfrooEditor: 1 }, '', location.href); } catch (e) { /* file:// etc. */ } }
     landing.hidden = on; editor.hidden = !on;
     document.body.classList.toggle('editor-open', on);
     if (!on) closePanel();
   }
 
+  function closeEditor() {
+    cancelAdd(true); cancelBlock(true); ui.openPop = null;
+    E.closeAll(); doc = null; ui.signature = null; renderSigNotice(); showEditor(false); window.scrollTo(0, 0);
+  }
+  let backConfirmed = false;
+  const LEAVE_MSG = 'Leave the editor? Your unsaved changes will be lost.';
   $('#closeBtn').addEventListener('click', () => {
     commitText();
-    if (ui.dirty && !confirm('Leave the editor? Your unsaved changes will be lost.')) return;
-    E.closeAll(); doc = null; ui.signature = null; renderSigNotice(); showEditor(false); window.scrollTo(0, 0);
+    if (ui.dirty && !confirm(LEAVE_MSG)) return;
+    if (history.state && history.state.pdfrooEditor) { backConfirmed = true; history.back(); }   // popstate closes it
+    else closeEditor();
+  });
+  window.addEventListener('popstate', (e) => {
+    if (editor.hidden || !doc) { backConfirmed = false; return; }
+    if (e.state && e.state.pdfrooEditor) return;
+    if (!backConfirmed) {
+      commitText();
+      if (ui.dirty && !confirm(LEAVE_MSG)) { try { history.pushState({ pdfrooEditor: 1 }, '', location.href); } catch (er) { /* ignore */ } return; }
+    }
+    backConfirmed = false;
+    $$('dialog[open]').forEach((d) => { try { d.close(); } catch (er) { /* ignore */ } });
+    closeEditor();
   });
 
   /* ---------------- History ---------------- */
@@ -248,8 +268,8 @@
     doc.pages = o.pages; ui.current = clamp(o.current, 0, doc.pages.length - 1); ui.selectedId = null; ui.lastEdit = null;
     renderAll();
   }
-  function undo() { cancelAdd(true); cancelLineEdit(); commitText(); if (!ui.history.length) return; ui.future.push(snapshot()); restore(ui.history.pop()); ui.dirty = true; updateChrome(); }
-  function redo() { cancelAdd(true); cancelLineEdit(); commitText(); if (!ui.future.length) return; ui.history.push(snapshot()); restore(ui.future.pop()); ui.dirty = true; updateChrome(); }
+  function undo() { cancelAdd(true); cancelBlock(true); cancelLineEdit(); commitText(); if (!ui.history.length) return; ui.future.push(snapshot()); restore(ui.history.pop()); ui.dirty = true; updateChrome(); }
+  function redo() { cancelAdd(true); cancelBlock(true); cancelLineEdit(); commitText(); if (!ui.future.length) return; ui.history.push(snapshot()); restore(ui.future.pop()); ui.dirty = true; updateChrome(); }
   $('#undoBtn').addEventListener('click', undo);
   $('#redoBtn').addEventListener('click', redo);
 
@@ -477,6 +497,7 @@
     }
     if (ui.tool === 'edittext') drawTextLines(pg);
     if (ui.addFlow) drawAddPreview(pg);
+    if (ui.block && ui.tool === 'edittext') drawBlockPreview(pg);
     if (ui.drag && ui.drag.temp) {
       const n = annotNode(ui.drag.temp, false);
       overlay.appendChild(n);
@@ -649,7 +670,7 @@
 
   /* ---------------- Tools ---------------- */
   function setTool(t) {
-    commitText(); cancelAdd(true);
+    commitText(); cancelAdd(true); cancelBlock(true); closePops();
     ui.tool = t;
     editor.dataset.tool = t;
     if (t !== 'select') ui.selectedId = null;
@@ -734,6 +755,10 @@
         return;                                // let the browser pan on touch
       }
     } else if (tool === 'edittext') {
+      if (ui.block) {
+        if (e.target.closest('[data-block]')) { e.preventDefault(); startBlockDrag(e); return; }
+        cancelBlock();
+      }
       const data = ui.lines && ui.lines.pageId === curPage().id ? ui.lines.data : null;
       const r = e.target.closest('[data-line]');
       if (!data) { toast('Still reading the text on this page…'); return; }
@@ -761,6 +786,7 @@
         ui.runSel = { pageId: curPage().id, ids }; renderOverlay(); buildPropbar(); return;
       }
       ui.runSel = { pageId: curPage().id, ids: [ln.id] };
+      armLongPress(e, ln.id);
       if (!ln.editable) {                                           // e.g. a Symbol-font bullet: can be moved, not retyped
         renderOverlay(); buildPropbar();
         toast(isPhone() ? 'Selected — use the arrows below to nudge it' : 'Selected — use the arrow keys or the arrows in the bar to nudge it');
@@ -1377,20 +1403,19 @@
     const pg = curPage(); if (!pg || ui.addFlow) return;
     const o = addOptionsFor(pg, lineId);
     if (!o || !(o.line || o.bullet || o.section)) return;
-    inner.appendChild(sep());
-    const g = document.createElement('div'); g.className = 'add-like'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Add like this');
-    const lab = document.createElement('span'); lab.className = 'prop-label'; lab.textContent = 'Add'; g.appendChild(lab);
-    [['line', 'Line below'], ['bullet', 'Bullet below'], ['section', 'Section like this']].forEach(([m, t]) => {
-      if (!o[m]) return;
-      const b = propBtn('i-plus', t, async () => {
-        if (ui.lineEdit) { await commitLineEdit(); }
-        startAdd(m, lineId);
+    const trig = tbBtn('i-plus', 'Add like this', null, 'add-trigger', 'Add');
+    inner.appendChild(popover('add', trig, (pop) => {
+      pop.classList.add('tb-menu', 'add-like'); pop.setAttribute('aria-label', 'Add like this');
+      [['line', 'Line below', 'i-plus'], ['bullet', 'Bullet below', 'i-plus'], ['section', 'Section like this', 'i-layers']].forEach(([m, t, ic]) => {
+        if (!o[m]) return;
+        const b = menuItem(ic, t, 'Same font, size, colour and indent; what’s below moves down', async () => {
+          closePops();
+          if (ui.lineEdit) { await commitLineEdit(); }
+          startAdd(m, lineId);
+        });
+        b.classList.add('add-' + m); pop.appendChild(b);
       });
-      b.classList.add('add-' + m); b.title = t + ' — same font, size, colour and indent; what’s below moves down';
-      b.addEventListener('mousedown', (e) => e.preventDefault());
-      g.appendChild(b);
-    });
-    inner.appendChild(g);
+    }));
   }
   function startAdd(mode, anchorId, extra) {
     const pg = curPage(); if (!pg) return;
@@ -1639,6 +1664,121 @@
     $('#toasts').appendChild(t);
     setTimeout(() => { if (t.isConnected) t.remove(); }, 12000);
   }
+  /* ---------------- Block selection (whole bullet / paragraph): move up / down, delete ---------------- */
+  function armLongPress(e, lineId) {
+    clearTimeout(ui.lpTimer);
+    const x0 = e.clientX, y0 = e.clientY;
+    const stop = () => { clearTimeout(ui.lpTimer); window.removeEventListener('pointerup', stop, true); window.removeEventListener('pointercancel', stop, true); window.removeEventListener('pointermove', mv, true); };
+    const mv = (ev) => { if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) stop(); };
+    window.addEventListener('pointerup', stop, true); window.addEventListener('pointercancel', stop, true); window.addEventListener('pointermove', mv, true);
+    ui.lpTimer = setTimeout(() => { stop(); if (ui.lineEdit && ui.lineEdit.ln.id === lineId && !ui.lineEdit.busy) closeLineEditor(); selectBlock(lineId); if (navigator.vibrate) try { navigator.vibrate(15); } catch (er) { /* ignore */ } }, 550);
+  }
+  async function selectBlock(lineId) {
+    const pg = curPage(); if (!pg) return;
+    cancelAdd(true); closePops();
+    if (ui.lineEdit) closeLineEditor();
+    ui.runSel = null;
+    let info;
+    try { info = await E.getBlock(doc, doc.pages.indexOf(pg), lineId); } catch (err) { console.error(err); info = { ok: false, message: 'Pdfroo couldn’t work out the paragraph here.' }; }
+    if (!info.ok) { toast(info.message, 'error'); return; }
+    ui.block = { pageId: pg.id, lineId, info, steps: 0, del: false, plan: null, token: 0 };
+    renderOverlay(); buildPropbar();
+    if (!ui.blockHinted) { ui.blockHinted = true; toast(isPhone() ? 'Paragraph selected — use ↑ ↓ to move it, or drag it' : 'Paragraph selected — drag it, or use ↑ ↓ (arrow keys); Enter applies'); }
+  }
+  function cancelBlock(silent) { if (!ui.block) return; ui.block = null; if (!silent) { renderOverlay(); buildPropbar(); } }
+  function resetBlock() { const b = ui.block; if (!b) return; b.steps = 0; b.del = false; b.plan = null; b.lastSteps = 0; b.lastPlan = null; b.token++; renderOverlay(); buildPropbar(); }
+  async function planBlockUI() {
+    const b = ui.block; if (!b) return;
+    const tok = ++b.token, pi = doc.pages.findIndex((p) => p.id === b.pageId);
+    let plan = null;
+    try {
+      if (b.del) plan = await E.planBlock(doc, pi, b.lineId, 'delete');
+      else if (b.steps) plan = await E.planBlock(doc, pi, b.lineId, b.steps > 0 ? 'down' : 'up', Math.abs(b.steps));
+    } catch (err) { console.error(err); plan = { ok: false, message: 'Pdfroo couldn’t work out this move, so nothing was changed.' }; }
+    if (ui.block !== b || tok !== b.token) return;
+    if (plan && !plan.ok) { toast(plan.message, 'error'); b.steps = b.lastSteps || 0; b.del = !!(b.lastPlan && b.lastPlan.op === 'delete'); b.plan = b.lastPlan || null; }
+    else {
+      if (plan && plan.partial) { toast(plan.partial); b.steps = (b.steps > 0 ? 1 : -1) * plan.steps; }
+      b.plan = plan; b.lastSteps = b.steps; b.lastPlan = plan;
+    }
+    renderOverlay(); buildPropbar();
+  }
+  function stepBlock(d) { const b = ui.block; if (!b) return; b.del = false; b.steps += d; if (!b.steps) { resetBlock(); return; } planBlockUI(); }
+  function deleteBlockPlan() { const b = ui.block; if (!b) return; b.steps = 0; b.del = true; planBlockUI(); }
+  async function applyBlockUI() {
+    const b = ui.block; if (!b || !b.plan || !b.plan.ok || b.busy) return;
+    const pi = doc.pages.findIndex((p) => p.id === b.pageId); if (pi < 0) return;
+    b.busy = true;
+    const snap = snapshot();
+    let res;
+    try { res = await E.applyBlock(doc, pi, b.plan); } catch (err) { console.error(err); res = { ok: false }; }
+    if (!res.ok) { b.busy = false; toast('Something went wrong, so nothing was changed.', 'error'); return; }
+    pushHistory(snap);
+    const del = b.plan.op === 'delete';
+    ui.block = null;
+    if (pi === ui.current) renderPage();
+    refreshThumb(pi); updateChrome();
+    toast(del ? 'Deleted — what was below moved up. Undo brings it back.' : 'Moved. Undo puts it back.', 'ok');
+    if (!del) await selectBlock(b.lineId); else { renderOverlay(); buildPropbar(); }
+  }
+  function blockTools(inner, sep, hint) {
+    const b = ui.block, info = b.info;
+    const chip = fontChip((info.kind === 'item' ? 'Bullet' : info.heading ? 'Heading' : 'Paragraph') + ` · ${info.rows} line${info.rows === 1 ? '' : 's'}`); chip.classList.add('block-chip');
+    inner.appendChild(chip);
+    inner.appendChild(sep());
+    const up = tbBtn(null, 'Move up (swap with the block above)', () => stepBlock(-1), 'blk-up', '↑');
+    const dn = tbBtn(null, 'Move down (swap with the block below)', () => stepBlock(1), 'blk-down', '↓');
+    const del = tbBtn('i-trash', 'Delete this block — what’s below moves up', () => deleteBlockPlan(), 'blk-del danger');
+    if (b.del) del.classList.add('active');
+    inner.append(up, dn, del);
+    if (b.plan && b.plan.ok) {
+      inner.appendChild(sep());
+      if (!isPhone()) inner.appendChild(hint(b.del ? 'i-trash' : 'i-layers', b.plan.summary));
+      const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'btn btn-primary tb-apply blk-apply'; ok.textContent = b.del ? 'Delete' : 'Apply'; ok.title = b.plan.summary;
+      ok.addEventListener('click', () => applyBlockUI());
+      const cx = tbBtn('i-x', 'Cancel this change', () => resetBlock(), 'blk-cancel');
+      inner.append(ok, cx);
+    } else {
+      inner.appendChild(sep());
+      inner.appendChild(tbBtn('i-check', 'Done — deselect the block', () => cancelBlock(), 'blk-done'));
+    }
+  }
+  function drawBlockPreview(pg) {
+    const b = ui.block; if (!b || b.pageId !== pg.id) return;
+    const z = ui.zoom, pad = 3 / z, pr = b.plan && b.plan.ok ? b.plan.preview : null;
+    const g = svg('g', { class: 'blk-preview' + (b.del ? ' del' : '') }, overlay);
+    const box = (r, cls, extra) => svg('rect', Object.assign({ class: cls, x: r.x - pad, y: r.y - pad, width: r.w + 2 * pad, height: r.h + 2 * pad, rx: 4 / z, 'stroke-width': 1.5 / z }, extra || {}), g);
+    const from = b.info.box;
+    const sel = box(from, 'blk-sel', { 'data-block': '1' });
+    const t = svg('title', {}, sel); t.textContent = 'Drag to move this block up or down';
+    if (b.drag) box({ x: from.x, y: from.y + b.drag.dy, w: from.w, h: from.h }, 'blk-ghost', { 'pointer-events': 'none' });
+    if (pr) {
+      (pr.moved || []).forEach((m) => box(m, 'blk-moved', { 'pointer-events': 'none' }));
+      if (pr.to) box(pr.to, 'blk-target', { 'pointer-events': 'none' });
+      if (pr.removed) box(pr.removed, 'blk-removed', { 'pointer-events': 'none' });
+    }
+    // grip on the left edge (touch target)
+    const gw = 14 / z;
+    const grip = svg('rect', { class: 'blk-grip', 'data-block': '1', x: from.x - pad - gw - 2 / z, y: from.y - pad, width: gw, height: from.h + 2 * pad, rx: 3 / z }, g);
+    void grip;
+  }
+  function startBlockDrag(e) {
+    const b = ui.block; if (!b) return;
+    const y0 = e.clientY;
+    b.drag = { dy: 0 };
+    const mv = (ev) => { if (!ui.block || !b.drag) return; b.drag.dy = (ev.clientY - y0) / ui.zoom; renderOverlay(); };
+    const up = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+      if (!b.drag) return;
+      const dy = b.drag.dy; b.drag = null;
+      // snap: one step per block passed (roughly this block's height + a line), at least one when dragged clearly
+      const unit = Math.max(14, b.info.box.h + 6);
+      const n = Math.abs(dy) < 8 ? 0 : Math.max(1, Math.round(Math.abs(dy) / unit));
+      if (!n) { renderOverlay(); return; }
+      b.del = false; b.steps = (dy > 0 ? 1 : -1) * n; planBlockUI();
+    };
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+  }
   function refreshThumb(i) {
     const li = thumbList.children[i]; if (!li) return;
     const frame = li.querySelector('.thumb-frame'); const old = frame.querySelector('img');
@@ -1683,28 +1823,40 @@
         const ids = sel.length ? sel : (ui.lineEdit ? [ui.lineEdit.ln.id] : []);
         const lns = data ? ids.map((id) => data.lines.find((l) => l.id === id)).filter(Boolean) : [];
         if (!lns.length || !lns.some((l) => l.movable)) return;
-        inner.appendChild(sep());
-        inner.appendChild(nudgePad((x, y) => nudgeRuns(x, y), 'Nudge the selected text'));
-        const al = propBtn('i-line', 'Align to line', alignToLine); al.classList.add('align-line');
-        al.addEventListener('mousedown', (e) => e.preventDefault()); inner.appendChild(al);
-        if (lns.length > 1) { const ae = propBtn('i-layers', 'Align left edges', alignLeftEdges); ae.classList.add('align-left'); inner.appendChild(ae); }
-        if (!isPhone()) inner.appendChild(hint('i-keyboard', ui.lineEdit ? 'Alt+arrows nudge 0.5 pt' : `Arrows nudge ${NUDGE} pt · Shift ${NUDGE_BIG} pt` + (lns.length < 2 ? ' · Shift-click to group' : ` · ${lns.length} runs`)));
+        inner.appendChild(movePopover((x, y) => nudgeRuns(x, y), 'Nudge the selected text', (pop) => {
+          const row = document.createElement('div'); row.className = 'tb-pop-row';
+          const al = propBtn('i-line', 'Align to line', () => { closePops(); alignToLine(); }); al.classList.add('align-line');
+          al.addEventListener('mousedown', (e) => e.preventDefault()); row.appendChild(al);
+          if (lns.length > 1) { const ae = propBtn('i-layers', 'Align left edges', () => { closePops(); alignLeftEdges(); }); ae.classList.add('align-left'); row.appendChild(ae); }
+          pop.appendChild(row);
+          const h = document.createElement('p'); h.className = 'tb-pop-note';
+          h.textContent = isPhone() ? 'Each tap moves 0.5 pt' : ui.lineEdit ? 'Alt+arrow keys nudge 0.5 pt' : `Arrow keys nudge ${NUDGE} pt · Shift ${NUDGE_BIG} pt` + (lns.length < 2 ? ' · Shift-click to group runs' : ` · ${lns.length} runs`);
+          pop.appendChild(h);
+        }));
       };
-      if (ui.lineEdit) {
-        if (!isPhone() && !ui.lineEdit.info) inner.appendChild(hint('i-text-edit', 'Type your change · Enter to apply · Esc to cancel'));
-        const fc = fontChip(ui.lineEdit.ln.label || ('Original font: ' + ui.lineEdit.ln.fontLabel)); fc.title += ' · Enter to apply · Esc to cancel';
+      const blockBtn = (lineId) => {
+        const b = tbBtn(null, 'Select paragraph — move or delete the whole bullet / paragraph (or long-press a line)', async () => { if (ui.lineEdit) await commitLineEdit(); selectBlock(lineId); }, 'sel-block', '¶');
+        inner.appendChild(b);
+      };
+      if (ui.block && ui.block.pageId === curPage().id) blockTools(inner, sep, hint);
+      else if (ui.lineEdit) {
+        const ln = ui.lineEdit.ln;
+        const fc = fontChip(ln.label || ln.fontLabel); fc.title = (ln.label || ('Original font: ' + ln.fontLabel)) + ' · type your change · Enter to apply · Esc to cancel';
         inner.appendChild(fc);
         if (ui.lineEdit.info) lineStyleTools(inner, sep, hint);
+        inner.appendChild(sep());
         addNudge();
-        addTools(inner, sep, ui.lineEdit.ln.id);
+        addTools(inner, sep, ln.id);
+        blockBtn(ln.id);
       } else if (ui.addFlow) inner.appendChild(hint('i-plus', ui.addFlow.plan && ui.addFlow.plan.uncertain ? 'Check the outlined area — drag the orange column edges if they’re wrong' : 'Outlined: what moves down · dashed: where it goes'));
       else if (!data) inner.appendChild(hint('i-text-edit', 'Reading the text on this page…'));
       else if (data.refusal) inner.appendChild(hint('i-help', data.refusal.message));
       else {
-        if (!sel.length) inner.appendChild(hint('i-text-edit', isPhone() ? 'Tap a line of text to change it' : 'Click any outlined line of text to change it'));
+        if (!sel.length) inner.appendChild(hint('i-text-edit', isPhone() ? 'Tap a line to change it · long-press for the paragraph' : 'Click a line to change it · long-press to select its paragraph'));
         else inner.appendChild(fontChip(sel.length > 1 ? `${sel.length} runs selected` : (() => { const l = data.lines.find((x) => x.id === sel[0]); return l ? (l.bullet ? 'Bullet · ' : '') + (l.label || l.fontLabel) : ''; })()));
+        if (sel.length) inner.appendChild(sep());
         addNudge();
-        if (sel.length === 1) { const l = data.lines.find((x) => x.id === sel[0]); if (l && !l.bullet) addTools(inner, sep, l.id); }
+        if (sel.length === 1) { const l = data.lines.find((x) => x.id === sel[0]); if (l && !l.bullet) addTools(inner, sep, l.id); if (l) blockBtn(l.id); }
         const stray = data.lines.filter((l) => l.strayBullet && l.movable);
         if (stray.length) {
           inner.appendChild(sep());
@@ -1723,7 +1875,7 @@
       inner.appendChild(hint('i-eraser', 'White-out box · drag corners to resize'));
     } else {
       const cur = target ? target.color : st.color;
-      inner.appendChild(colorPicker(kind === 'highlight' ? HL_PALETTE : PALETTE, cur, (c, live) => apply('color', c, live)));
+      inner.appendChild(colorPopover(kind === 'highlight' ? HL_PALETTE : PALETTE, cur, (c, live) => apply('color', c, live), ''));
       inner.appendChild(sep());
       if (kind === 'text') {
         const size = target ? target.size : st.size;
@@ -1739,7 +1891,8 @@
         };
         g.children[0].addEventListener('click', () => step(-1));
         g.children[2].addEventListener('click', () => step(1));
-        inner.appendChild(labelled('Size', g));
+        g.title = 'Font size';
+        inner.appendChild(g);
         const bold = document.createElement('button');
         bold.type = 'button'; bold.className = 'icon-btn toggle-btn'; bold.setAttribute('aria-label', 'Bold'); bold.title = 'Bold';
         bold.setAttribute('aria-pressed', String(!!(target ? target.bold : st.bold)));
@@ -1768,8 +1921,7 @@
     }
     if (s && !editingText) {
       inner.appendChild(sep());
-      inner.appendChild(nudgePad((x, y) => { commit(() => translate(s, x, y)); renderOverlay(); updateThumbOverlay(); }, 'Nudge the selected object'));
-      inner.appendChild(sep());
+      inner.appendChild(movePopover((x, y) => { commit(() => translate(s, x, y)); renderOverlay(); updateThumbOverlay(); }, 'Nudge the selected object'));
       inner.appendChild(propBtn('i-copy', 'Duplicate', duplicateSelected));
       const del = propBtn('i-trash', 'Delete', deleteSelected); del.classList.add('danger');
       inner.appendChild(del);
@@ -1783,15 +1935,15 @@
     const changed = () => { positionLineEditor(); buildPropbar(); };
     inner.appendChild(sep());
     const cur = () => st.size || le.ln.origSize || le.ln.size;
-    const g = document.createElement('div'); g.className = 'stepper line-size'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Font size');
-    g.innerHTML = `<button type="button" class="icon-btn" aria-label="Decrease font size"><svg class="i"><use href="#i-minus"/></svg></button><output aria-live="polite"></output><button type="button" class="icon-btn" aria-label="Increase font size"><svg class="i"><use href="#i-plus"/></svg></button>`;
+    const g = document.createElement('div'); g.className = 'stepper line-size'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Font size'); g.title = 'Font size';
+    g.innerHTML = `<button type="button" class="icon-btn" aria-label="Decrease font size" title="Smaller"><svg class="i"><use href="#i-minus"/></svg></button><output aria-live="polite"></output><button type="button" class="icon-btn" aria-label="Increase font size" title="Bigger"><svg class="i"><use href="#i-plus"/></svg></button>`;
     g.querySelector('output').textContent = (Math.round(cur() * 2) / 2).toString();
     const stepSize = (d) => { const v = Math.max(4, Math.min(144, Math.round((cur() + d) * 2) / 2)); st.size = Math.abs(v - (le.ln.origSize || le.ln.size)) < 0.01 ? null : v; if (st.size == null) delete st.size; changed(); };
     keep(g.children[0]).addEventListener('click', () => stepSize(-0.5));
     keep(g.children[2]).addEventListener('click', () => stepSize(0.5));
-    inner.appendChild(labelled('Size', g));
+    inner.appendChild(g);
     const tog = (icon, label, key, can, same) => {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'icon-btn toggle-btn line-' + key;
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'icon-btn toggle-btn tb-btn line-' + key;
       const val = st[key] != null ? st[key] : !!(le.ln[key]);
       b.setAttribute('aria-pressed', String(!!val)); b.setAttribute('aria-label', label);
       b.disabled = !can;
@@ -1802,21 +1954,105 @@
     };
     inner.appendChild(tog('<svg class="i"><use href="#i-bold"/></svg>', 'Bold', 'bold', info.canBold, info.boldSameFont));
     inner.appendChild(tog('<span class="i-italic" aria-hidden="true">I</span>', 'Italic', 'italic', info.canItalic, info.italicSameFont));
-    inner.appendChild(sep());
     const oc = String(le.info.origColor || '#000000').toLowerCase();
     const pal = [oc].concat(['#111827', '#e11d48', '#2563eb', '#16a34a'].filter((c) => c !== oc));
-    const cp = colorPicker(pal, st.color || le.ln.color || '#000000', (c) => { st.color = c === oc ? null : c; if (st.color == null) delete st.color; positionLineEditor(); });
-    cp.classList.add('line-color'); inner.appendChild(cp);
-    inner.appendChild(sep());
-    const al = document.createElement('div'); al.className = 'seg line-align'; al.setAttribute('role', 'radiogroup'); al.setAttribute('aria-label', 'Alignment');
+    inner.appendChild(colorPopover(pal, st.color || le.ln.color || '#000000', (c) => { st.color = c === oc ? null : c; if (st.color == null) delete st.color; positionLineEditor(); }, 'line-color'));
+    // alignment: one button, options in a dropdown
     const curA = st.align || 'auto';
-    [['auto', 'Auto', 'Keep the line’s own alignment (detected: ' + info.align + ')'], ['left', 'L', 'Align left (grow to the right)'], ['center', 'C', 'Centre (grow both ways)'], ['right', 'R', 'Align right (grow to the left)'], ['justify', 'J', 'Justify (keep the line’s width)']].forEach(([v, t, ttl]) => {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'seg-btn'; b.dataset.align = v; b.textContent = t; b.title = ttl;
-      b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(curA === v)); b.setAttribute('aria-label', ttl);
-      keep(b).addEventListener('click', () => { if (v === 'auto') delete st.align; else st.align = v; changed(); });
-      al.appendChild(b);
+    const AL = [['auto', 'Auto', 'Keep the line’s own alignment (detected: ' + info.align + ')', 'A'], ['left', 'Left', 'Align left (grow to the right)', 'L'], ['center', 'Centre', 'Centre (grow both ways)', 'C'], ['right', 'Right', 'Align right (grow to the left)', 'R'], ['justify', 'Justify', 'Justify (keep the line’s width)', 'J']];
+    const curDef = AL.find((a) => a[0] === curA);
+    const at = tbBtn(null, 'Alignment: ' + curDef[1], null, 'align-trigger', alignGlyph(curA));
+    inner.appendChild(popover('align', at, (pop) => {
+      pop.classList.add('tb-menu');
+      const al = document.createElement('div'); al.className = 'seg line-align'; al.setAttribute('role', 'radiogroup'); al.setAttribute('aria-label', 'Alignment');
+      AL.forEach(([v, t, ttl]) => {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'seg-btn tb-item'; b.dataset.align = v; b.title = ttl;
+        b.innerHTML = alignGlyph(v) + '<span></span>'; b.lastChild.textContent = t + (v === 'auto' ? ` (${info.align})` : '');
+        b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(curA === v)); b.setAttribute('aria-label', ttl);
+        keep(b).addEventListener('click', () => { closePops(); if (v === 'auto') delete st.align; else st.align = v; changed(); });
+        al.appendChild(b);
+      });
+      pop.appendChild(al);
+    }));
+  }
+  /** Small alignment glyph (four lines) for the align button / menu. */
+  function alignGlyph(v) {
+    const L = { auto: [[4, 20], [4, 16], [4, 20], [4, 12]], left: [[4, 20], [4, 14], [4, 20], [4, 12]], center: [[4, 20], [7, 17], [4, 20], [8, 16]], right: [[4, 20], [10, 20], [4, 20], [12, 20]], justify: [[4, 20], [4, 20], [4, 20], [4, 20]] }[v] || [[4, 20]];
+    const d = L.map(([a, b], i) => `M${a} ${6 + i * 4}H${b}`).join('');
+    return `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>${v === 'auto' ? '<circle cx="19" cy="18" r="3" fill="currentColor"/>' : ''}</svg>`;
+  }
+  /* ---------- compact toolbar pieces: icon buttons, popovers ---------- */
+  function tbBtn(icon, label, fn, cls, glyph) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'icon-btn tb-btn' + (cls ? ' ' + cls : '');
+    b.innerHTML = icon ? `<svg class="i"><use href="#${icon}"/></svg>` : '';
+    if (glyph) { if (/^</.test(glyph)) b.insertAdjacentHTML('beforeend', glyph); else { const sp = document.createElement('span'); sp.className = 'tb-glyph'; sp.textContent = glyph; b.appendChild(sp); } }
+    if (icon && glyph && !/^</.test(glyph)) b.classList.add('with-text');
+    b.setAttribute('aria-label', label); b.title = label;
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    if (fn) b.addEventListener('click', fn);
+    return b;
+  }
+  function menuItem(icon, text, title, fn) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'prop-btn tb-item';
+    b.innerHTML = `<svg class="i"><use href="#${icon}"/></svg><span></span>`; b.lastChild.textContent = text;
+    b.setAttribute('aria-label', text); b.title = text + (title ? ' — ' + title : '');
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', fn); return b;
+  }
+  /** A button that opens a small panel. The open panel survives bar rebuilds (e.g. while nudging) until closed. */
+  function popover(key, trig, build) {
+    const wrap = document.createElement('div'); wrap.className = 'tb-pop-wrap';
+    const pop = document.createElement('div'); pop.className = 'tb-pop'; pop.dataset.pop = key; pop.setAttribute('role', 'dialog');
+    trig.classList.add('tb-pop-trigger'); trig.setAttribute('aria-haspopup', 'true');
+    build(pop);
+    const set = (open) => {
+      if (open) { closePops(key); ui.openPop = key; } else if (ui.openPop === key) ui.openPop = null;
+      pop.hidden = !open; trig.setAttribute('aria-expanded', String(open)); trig.classList.toggle('open', open);
+      if (open) placePop(trig, pop);
+    };
+    pop._open = () => set(true); pop._close = () => set(false);
+    trig.addEventListener('click', () => set(pop.hidden));
+    wrap.append(trig, pop);
+    pop.hidden = true; trig.setAttribute('aria-expanded', 'false');
+    if (ui.openPop === key) requestAnimationFrame(() => { if (wrap.isConnected) set(true); });
+    return wrap;
+  }
+  function placePop(trig, pop) {
+    pop.style.left = '0px'; pop.style.top = '0px';
+    const r = trig.getBoundingClientRect(), pw = pop.offsetWidth, ph = pop.offsetHeight;
+    const left = Math.max(8, Math.min(window.innerWidth - pw - 8, r.left + r.width / 2 - pw / 2));
+    const top = r.bottom + ph + 10 <= window.innerHeight ? r.bottom + 6 : Math.max(8, r.top - ph - 6);
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  }
+  function closePops(except) {
+    $$('.tb-pop').forEach((p) => { if (p.dataset.pop !== except && !p.hidden) { p.hidden = true; const t = p.parentNode && p.parentNode.querySelector('.tb-pop-trigger'); if (t) { t.setAttribute('aria-expanded', 'false'); t.classList.remove('open'); } } });
+    if (ui.openPop && ui.openPop !== except) ui.openPop = null;
+  }
+  document.addEventListener('pointerdown', (e) => { if (ui.openPop && !e.target.closest('.tb-pop, .tb-pop-trigger')) closePops(); }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.openPop) { closePops(); e.stopPropagation(); } }, true);
+  window.addEventListener('resize', () => closePops());
+  function movePopover(onMove, label, extra) {
+    const trig = tbBtn(null, 'Move — nudge the selection', null, 'move-trigger', '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+    return popover('move', trig, (pop) => { pop.classList.add('tb-move'); pop.appendChild(nudgePad(onMove, label)); if (extra) extra(pop); });
+  }
+  const RECENT_KEY = 'pdfroo-recent-colors';
+  function recentColors() { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]').filter((c) => /^#[0-9a-f]{6}$/i.test(c)).slice(0, 5); } catch (e) { return []; } }
+  function rememberColor(c) { try { const r = [String(c).toLowerCase()].concat(recentColors().filter((x) => x !== String(c).toLowerCase())).slice(0, 5); localStorage.setItem(RECENT_KEY, JSON.stringify(r)); } catch (e) { /* private mode */ } }
+  /** One colour button; the palette (+ recent colours + custom picker) opens in a small popover. */
+  function colorPopover(palette, current, onPick, cls) {
+    const lc = String(current || '#000000').toLowerCase();
+    const trig = tbBtn(null, 'Colour', null, 'color-trigger', `<span class="tb-dot" style="background:${/^#[0-9a-f]{3,8}$/i.test(lc) ? lc : '#000'}"></span>`);
+    return popover('color', trig, (pop) => {
+      pop.classList.add('tb-colors');
+      const pal = palette.concat(recentColors().filter((c) => !palette.includes(c))).slice(0, 9);
+      const cp = colorPicker(pal, lc, (c, live) => {
+        const dot = trig.querySelector('.tb-dot'); if (dot) dot.style.background = c;
+        if (!live) { rememberColor(c); }
+        onPick(c, live);
+      });
+      if (cls) cp.classList.add(cls);
+      pop.appendChild(cp);
     });
-    inner.appendChild(al);
   }
   function fontChip(text, tier) {
     const c = document.createElement('span'); c.className = 'font-chip' + (tier === 1 ? ' exact' : '');
@@ -2464,6 +2700,12 @@
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }
     if (mod && k === 'd') { e.preventDefault(); duplicateSelected(); return; }
     if (mod) return;
+    if (ui.block && ui.tool === 'edittext') {
+      if (k === 'arrowdown' || k === 'arrowup') { e.preventDefault(); stepBlock(k === 'arrowdown' ? 1 : -1); return; }
+      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteBlockPlan(); return; }
+      if (e.key === 'Enter') { e.preventDefault(); applyBlockUI(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); if (ui.block.plan) resetBlock(); else cancelBlock(); return; }
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selected()) { e.preventDefault(); deleteSelected(); return; }
     if (e.key === 'Escape') { if (runSel().length) { ui.runSel = null; renderOverlay(); buildPropbar(); return; } if (ui.selectedId) select(null); else if (ui.tool !== 'select') setTool('select'); closePanel(); return; }
     const s = selected();
@@ -2495,5 +2737,5 @@
   window.addEventListener('beforeunload', (e) => { if (doc && ui.dirty) { e.preventDefault(); e.returnValue = ''; } });
 
   // Expose a tiny debug/testing surface (state is plain JSON).
-  window.Folio = { getState: () => doc, ui, openPdf, exportBytes: () => E.exportWithAnnotations(doc), find: fr, makeZip, compress: cmp };
+  window.Folio = { reveal: (sel) => { const el = document.querySelector(sel); const p = el && el.closest('.tb-pop'); if (p && p.hidden && p._open) p._open(); return !!el; }, getState: () => doc, ui, openPdf, exportBytes: () => E.exportWithAnnotations(doc), find: fr, makeZip, compress: cmp };
 })();

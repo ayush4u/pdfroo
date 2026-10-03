@@ -1304,7 +1304,9 @@
     const vp = an.page.getViewport({ scale: 1, rotation: totalRotation(pg) });
     const edits = pg.textEdits || [];
     const out = [];
+    const droppedL = pg.drops && pg.drops.length ? dropSets(pg).lines : null;
     for (const ln of an.lines) {
+      if (droppedL && droppedL.has(ln.id)) continue;
       const e = edits.find((x) => x.lineId === ln.id);
       const mv = e && e.move ? e.move : { dx: 0, dy: e ? 0 : lineShift(pg, ln) };
       let w = ln.width;
@@ -1945,13 +1947,14 @@
       if (shifts) {
         // "Add like this": vector paths, images and forms below the insertion point move with the text
         for (const sh of shows) {
-          if (consumed.has(sh.i) || !sh.start || !sh.m || showRotated(sh)) continue;
+          if (consumed.has(sh.i) || (drops && drops.shows.has(sh.i)) || !sh.start || !sh.m || showRotated(sh)) continue;
           const d = RF().shiftFor((showBoxes && showBoxes[sh.i]) || showBox(sh), shifts); if (!d) continue;
           const mv = T.movedFor(sh, ops[sh.i], 0, d, str.slice(sh.s, sh.e));
           if (mv) reps.push({ s: sh.s, e: sh.e, text: mv });
         }
         scan = scan || RF().scanGeometry(ops, xinfoFor(L, page.node.Resources()));
         RF().shiftReps(str, scan, (it, k) => (drops && drops.items.has(k) ? 0 : RF().itemShift(it, shifts))).forEach((r) => reps.push(r));
+        RF().clipGrowReps(scan, shifts).forEach((r) => reps.push(r));
         for (const a of annotRects(L, page.node)) {
           const d = RF().shiftFor(a.bbox, shifts); if (!d) continue;
           const r = a.dict.lookup(L.PDFName.of('Rect'), L.PDFArray).asArray().map((x) => (x.asNumber ? x.asNumber() : 0));
@@ -2734,6 +2737,61 @@
   const showBox = (sh) => { const sz = Math.abs(sh.m[3]) || sh.Tfs || 10; const a = sh.start[0], b = (sh.inkEnd || sh.end || sh.start)[0]; return [Math.min(a, b), sh.start[1] - 0.25 * sz, Math.max(a, b), sh.start[1] + 0.8 * sz]; };
   const showRotated = (sh) => Math.abs(sh.m[1]) > 0.02 * Math.abs(sh.m[0] || 1) || Math.abs(sh.m[2]) > 0.02 * Math.abs(sh.m[3] || 1) || (sh.m[0] || 0) <= 0 || (sh.m[3] || 0) <= 0;
   const probeBox = (l) => [l.x, l.y - 0.25 * l.size, l.x + Math.max(l.width, 0.3 * l.size), l.y + 0.8 * l.size];
+  /** Paragraph walk shared by "line below" and block selection: from row i0 down to the paragraph's last row. A row ends
+   *  its paragraph at a bullet / label start, a style or size change, a gap over 1.25 lead, a different x, a voluntary
+   *  break (the next first word would have fitted) or a short list entry. */
+  function paraWalk(col, i0, lead) {
+    const row = col[i0]; let e = i0;
+    const isStartRow = (r) => !!(r.bulletRun || r.inlineBullet);
+    const labelStart = (r) => { const ls = r.lines.filter((l) => !l.bullet); return ls.length >= 2 && !!ls[0].bold && !ls[1].bold && /:\s*$/.test(String(ls[0].text)); };
+    const maxR = Math.max(...col.filter((r) => Math.abs(r.size - row.size) < 0.15 * row.size).map((r) => r.x1));
+    const contX = (q) => Math.abs(q.x0 - row.x0) < 1.5 || Math.abs(q.x0 - row.textX) < 1.5 || (labelStart(row) && q.x0 > row.x0 && q.x0 < row.lines[1].x + 1.5);
+    // a line ends its paragraph when the next line's first word would have fitted on it (a voluntary break)
+    // short list entries (Skills: "GST filing" / "Payroll processing"): a capitalised next line after a line that stops
+    // well short of the column and doesn't end mid-phrase is a new entry
+    const listLike = (a, q) => /^[A-Z]/.test(String(q.text || '').trim()) && a.x1 < maxR - 2 * row.size && !/(,|;|-|–|&|\band|\bor|\bof|\bthe|\bwith|\bfor|\bto|\bin)\s*$/i.test(String(a.text || '').trim());
+    const wordFits = (a, q) => {
+      const t = String(q.text || '').trim(), w0 = t.split(/\s+/)[0] || '';
+      if (!w0 || !t.length) return false;
+      const perCh = (q.x1 - q.x0) / Math.max(1, Array.from(t).length);
+      return a.x1 + 0.28 * q.size + perCh * Array.from(w0).length < maxR - 0.5;
+    };
+    while (e + 1 < col.length) {
+      const q = col[e + 1], g = col[e].y - q.y;
+      if (isStartRow(q) || labelStart(q) || !!q.bold !== !!row.lines[row.lines.length - 1].bold || g > 1.25 * lead || g < 0.5 * lead || Math.abs(q.size - row.size) >= 0.1 * row.size || !contX(q) || wordFits(col[e], q) || listLike(col[e], q)) break;
+      e++;
+    }
+    return e;
+  }
+  /** The paragraph / bullet unit around row i0 of a column: { start, end, kind }. Bullet items come from layoutAround. */
+  function paragraphOf(col, i0, lead, item) {
+    const bl = (a, b) => Math.abs(a.y - b.y) < 0.4 * Math.max(a.size, b.size);
+    let s, e, kind;
+    if (item && i0 >= item.start && i0 <= item.end) { s = item.start; e = item.end; kind = 'item'; }
+    else {
+      s = i0; kind = 'para';
+      while (s > 0 && !(col[s].bulletRun || col[s].inlineBullet) && !bl(col[s - 1], col[s]) && paraWalk(col, s - 1, lead) >= s) s--;
+      e = Math.max(i0, paraWalk(col, s, lead));
+    }
+    // rows on the same baselines (a title and its right-hand date) belong to the unit too
+    while (s > 0 && bl(col[s - 1], col[s])) s--;
+    while (e + 1 < col.length && bl(col[e + 1], col[e])) e++;
+    return { start: s, end: e, kind };
+  }
+  /** Lines without hidden-only text (keyword stuffing: Tr 3, white on white, fully clipped). They never take part in the
+   *  layout or the preview; when they sit in a moving region they just move along (still invisible). */
+  function visibleLines(cur, geo, pg, keepId) {
+    const hid = (geo.texts || []).filter((t) => t.hidden);
+    if (!hid.length) return cur;
+    const vis = (geo.texts || []).filter((t) => !t.hidden && !t.rot);
+    return cur.filter((l) => {
+      if (l.id === keepId || l.edit || l.inserted) return true;
+      const pb = probeBox(l.orig || l), d = l.orig ? l.y - l.orig.y : 0;
+      const hit = (t) => { const cy = (t.box[1] + t.box[3]) / 2; return Math.abs(cy - (pb[1] + pb[3]) / 2) < 0.45 * l.size && Math.min(t.box[2], pb[2]) - Math.max(t.box[0], pb[0]) > 0.2 * l.size; };
+      void d;
+      return !hid.some(hit) || vis.some(hit);
+    });
+  }
   /** How far an untouched line has been moved by "Add like this" shifts. */
   const lineShift = (pg, ln) => (pg.shifts && pg.shifts.length ? RF().shiftFor(probeBox(ln), pg.shifts) : 0);
   function xinfoFor(L, resDict) {
@@ -2804,7 +2862,12 @@
         if (!sh.start || !sh.m) continue;
         const box = showBox(sh);
         g.boxes[sh.i] = box;
-        g.texts.push({ i: sh.i, box, rot: showRotated(sh), movable: !showRotated(sh) && !!T.movedFor(sh, ops[sh.i], 0, -1, str.slice(sh.s, sh.e)), text: sh.text || '' });
+        // hidden text (resume-builder keyword stuffing): invisible render mode, white on a white page, or fully clipped out
+        const c = scan.textClip[sh.i];
+        const white = String(sh.fill || '').toLowerCase() === '#ffffff' && !scan.items.some((it) => it.kind !== 'path' ? it.kind !== 'shading' ? box[0] >= it.bbox[0] && box[2] <= it.bbox[2] && box[1] >= it.bbox[1] && box[3] <= it.bbox[3] : !(it.bbox[2] < box[0] || it.bbox[0] > box[2] || it.bbox[3] < box[1] || it.bbox[1] > box[3])
+          : it.painted && !it.stroke && !/(^|\s)(1 g|1 1 1 rg|0 0 0 0 k)(\s|$)/.test(it.gsText || '') && box[0] >= it.bbox[0] - 1 && box[2] <= it.bbox[2] + 1 && box[1] >= it.bbox[1] - 1 && box[3] <= it.bbox[3] + 1);
+        const hidden = sh.Tr === 3 || sh.Tr === 7 || white || !!(c && (box[2] < c[0] || box[0] > c[2] || box[3] < c[1] || box[1] > c[3]));
+        g.texts.push({ i: sh.i, box, rot: showRotated(sh), movable: !showRotated(sh) && !!T.movedFor(sh, ops[sh.i], 0, -1, str.slice(sh.s, sh.e)), text: sh.text || '', hidden });
       }
     } catch (e) { g.textError = e.message; }
     geoCache.set(key, g);
@@ -3208,7 +3271,7 @@
     }
     const geo = await pageGeometry(pg.src, pg.index);
     const view = an.page.view;
-    const cur = currentLines(an, pg);
+    const cur = visibleLines(currentLines(an, pg), geo, pg, anchorId);
     const la = layoutAround(an, cur, anchorId, opts.region, geo);
     if (!la) return no('That line could not be found.');
     const { rows, row, st } = la;
@@ -3293,25 +3356,8 @@
         // a paragraph that wraps (e.g. "Cloud & Tools: …" + its second line): the new line goes after its last line,
         // and a paragraph gap (if the next paragraph has one) is kept
         const i0 = col.indexOf(row);
-        let e = i0;
         const labelStart = (r) => { const ls = r.lines.filter((l) => !l.bullet); return ls.length >= 2 && !!ls[0].bold && !ls[1].bold && /:\s*$/.test(String(ls[0].text)); };
-        const maxR = Math.max(...col.filter((r) => Math.abs(r.size - row.size) < 0.15 * row.size).map((r) => r.x1));
-        const contX = (q) => Math.abs(q.x0 - row.x0) < 1.5 || Math.abs(q.x0 - row.textX) < 1.5 || (labelStart(row) && q.x0 > row.x0 && q.x0 < row.lines[1].x + 1.5);
-        // a line ends its paragraph when the next line's first word would have fitted on it (a voluntary break)
-        // short list entries (Skills: "GST filing" / "Payroll processing"): a capitalised next line after a line that stops
-        // well short of the column and doesn't end mid-phrase is a new entry
-        const listLike = (a, q) => /^[A-Z]/.test(String(q.text || '').trim()) && a.x1 < maxR - 2 * row.size && !/(,|;|-|–|&|\band|\bor|\bof|\bthe|\bwith|\bfor|\bto|\bin)\s*$/i.test(String(a.text || '').trim());
-        const wordFits = (a, q) => {
-          const t = String(q.text || '').trim(), w0 = t.split(/\s+/)[0] || '';
-          if (!w0 || !t.length) return false;
-          const perCh = (q.x1 - q.x0) / Math.max(1, Array.from(t).length);
-          return a.x1 + 0.28 * q.size + perCh * Array.from(w0).length < maxR - 0.5;
-        };
-        while (e + 1 < col.length) {
-          const q = col[e + 1], g = col[e].y - q.y;
-          if (isStartRow(q) || labelStart(q) || !!q.bold !== !!row.lines[row.lines.length - 1].bold || g > 1.25 * lead || g < 0.5 * lead || Math.abs(q.size - row.size) >= 0.1 * row.size || !contX(q) || wordFits(col[e], q) || listLike(col[e], q)) break;
-          e++;
-        }
+        const e = paraWalk(col, i0, lead);
         anchorRow = col[e]; if (e > i0) xCont = col[i0 + 1].x0;
         const nx = col[nextBelow(e)];
         if (nx && Math.abs(nx.size - row.size) < 0.1 * row.size && nx.x0 <= row.x0 + 1.5 && nx.x0 >= row.x0 - 1.5) { const g = anchorRow.y - nx.y; if (g > 1.08 * lead && g < 2.6 * lead) firstGap = g; else if (g >= 0.8 * row.size && g <= 1.08 * lead) firstGap = g; }   // the step to the next sibling, not the page's most common step
@@ -3488,11 +3534,29 @@
       }
     }
     const movedGeoKeys = new Set(moveGeo.map((g) => g.k));
+    // a visible-content clip that ends right under the last line: when nothing it hides lies in the strip below it (the
+    // area renders blank there), its bottom edge grows with the move instead of refusing
+    const grows = [];
+    const effClip = (c) => (c ? [c[0], c[1] + RF().growFor(c, pg.shifts), c[2], c[3]] : c);
+    const tryGrow = (c) => {
+      if (grows.some((b) => RF().sameBox(b, c))) return true;
+      const h = geoItems.find((q) => RF().sameBox(q.it.bbox, c) && RF().growable(q.it) && !movedGeoKeys.has(q.k));
+      if (!h || c[3] - c[1] >= 0.95 * H) return false;
+      const ce = effClip(c), zone = [c[0], ce[1] + dy - 2, c[2], ce[1] + 0.5];
+      const hits = (bb) => !(bb[2] < zone[0] || bb[0] > zone[2] || bb[3] < zone[1] || bb[1] > zone[3]);
+      for (const t of geo.texts || []) {
+        if (t.hidden || t.rot || !RF().sameBox(geo.scan.textClip[t.i], c)) continue;
+        const d0 = RF().shiftFor(t.box, pg.shifts), bb = [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0];
+        if (!inR(bb) && hits(bb)) return false;
+      }
+      for (const g of geoItems) if (!movedGeoKeys.has(g.k) && g.it.kind !== 'shading' && (g.it.kind !== 'path' || g.it.painted) && RF().sameBox(g.it.clipAt, c) && hits(g.bb)) return false;
+      grows.push(c.slice()); return true;
+    };
     for (const g of moveGeo) {
       const c = g.it.clipAt; if (!c) continue;
       const clipItem = geoItems.find((h) => h.it.clip && h.it.i1 < g.it.i0 && Math.abs(h.it.bbox[0] - c[0]) < 0.5 && Math.abs(h.it.bbox[3] - c[3]) < 0.5);
       if (clipItem && movedGeoKeys.has(clipItem.k)) continue;
-      if (g.bb[1] + dy < c[1] - 1) conflicts.push({ kind: 'clip', clipBot: c[1], bbox: g.bb, message: 'Part of the page below is clipped; moving it would hide it.' });
+      if (g.bb[1] + dy < effClip(c)[1] - 1 && !(g.it.kind === 'path' && !g.it.painted) && !tryGrow(c)) conflicts.push({ kind: 'clip', clipBot: c[1], bbox: g.bb, message: 'Part of the page below is clipped; moving it would hide it.' });
     }
     // text runs: those in the region move in the content stream; a run that is only partly in it (e.g. a LaTeX line whose
     // left text and right-aligned date are one TJ across the column edge) can't, nor can one that would leave its clip
@@ -3506,9 +3570,9 @@
         const d0 = RF().shiftFor(t.box, pg.shifts), bb = [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0];
         const cy = (bb[1] + bb[3]) / 2;
         if (inR(bb)) {
-          if (!t.movable) stuck = stuck || bb;
+          if (!t.movable && !t.hidden) stuck = stuck || bb;
           const c = geo.scan.textClip[t.i];
-          if (c && bb[1] + dy < c[1] - 1 && c[3] - c[1] < 0.95 * H && !clipMoves(c)) { clipped = clipped || bb; clipBot = Math.max(clipBot, c[1]); }
+          if (!t.hidden && c && bb[1] + dy < effClip(c)[1] - 1 && c[3] - c[1] < 0.95 * H && !clipMoves(c) && !tryGrow(c)) { clipped = clipped || bb; clipBot = Math.max(clipBot, c[1]); }
         } else if (rects.some((r) => cy <= r.yTop && cy >= r.yBot && bb[2] > r.x0 + 1 && bb[0] < r.x1 - 1 && ((bb[0] < r.x0 - 1) || (bb[2] > r.x1 + 1)))) shared = shared || bb;
       }
       if (shared) conflicts.push({ kind: 'shared', bbox: shared, message: 'A line below runs across the column edge (its text is one piece), so it can’t be moved safely. Drag the column edges to include all of it, or add this lower down.' });
@@ -3659,11 +3723,11 @@
     const ok = !conflicts.length && (!overflow || !!flow || !!fit);
     const flowInfo = flow ? flowSummary(flow, view, dy, pageIndex) : null;
     const res = {
-      ok, mode, pageIndex, anchorId, text: typed, body: opts.body || '', region: { x0: st.x0, x1: st.x1, yCut, rects, dyn: !!opts.region }, dy,
+      ok, mode, pageIndex, anchorId, text: typed, body: opts.body || '', region: { x0: st.x0, x1: st.x1, yCut, rects, dyn: !!opts.region }, grow: grows.length ? grows : undefined, dy,
       lead, colRight: colR, uncertain, notes, conflicts: conflicts.slice(0, 6), overflow, bottomLimit,
       newLines, pathClones, counts, moving: { lines: moveLines.map((l) => l.id), geo: moveGeo.map((g) => g.k), annots: moveAnn.map((a) => a.i), app: moveApp.map((a) => a.id) },
       preview: {
-        moved: uniq(moveLines.map((l) => disp(lineBox(l))).concat(moveGeo.map((g) => disp(g.bb)), moveAnn.map((a) => disp(a.bb)), moveApp.map((a) => disp(appAnnotBox(a, view))))),
+        moved: uniq(moveLines.map((l) => disp(lineBox(l))).concat(moveGeo.filter((g) => (g.it.kind !== 'path' || g.it.painted) && Math.max(g.bb[2] - g.bb[0], g.bb[3] - g.bb[1]) >= 1.5).map((g) => disp(g.bb)), moveAnn.map((a) => disp(a.bb)), moveApp.map((a) => disp(appAnnotBox(a, view))))),
         ddy: -dy, region: { x0: st.x0 - view[0], x1: st.x1 - view[0], yTop: view[3] - yCut, yBot: view[3] - rects[0].yBot, extra: rects.slice(1).map((r) => ({ x0: r.x0 - view[0], x1: r.x1 - view[0], yTop: view[3] - r.yTop })) },
         added: newLines.map((l) => disp([l.x, l.y - 0.22 * l.size, l.x + Math.max(l.w, l.size * 0.4), l.y + 0.78 * l.size])).concat(pathClones.map((p) => disp(p.bbox))),
         conflicts: conflicts.map((c) => disp(c.bbox)), gutters: st.gutters.map((g) => [g[0] - view[0], g[1] - view[0]]), page: { w: W, h: H },
@@ -4028,7 +4092,7 @@
       if (e) { const ne = Object.assign({}, e, { move: { dx: (e.move ? e.move.dx : 0), dy: r3((e.move ? e.move.dy : 0) + dy + extra) } }); pg.textEdits[pg.textEdits.indexOf(e)] = ne; }
     }
     // 2. vector paths, images, links: recorded as a page shift, applied to the content stream at render / export
-    if (!flow) pg.shifts = (pg.shifts || []).concat(fitShifts || [], [{ rects: plan.region.rects, dy: r3(dy), tol: 1 }]);
+    if (!flow) pg.shifts = (pg.shifts || []).concat(fitShifts || [], [Object.assign({ rects: plan.region.rects, dy: r3(dy), tol: 1 }, plan.grow ? { grow: plan.grow } : {})]);
     // 3. annotations added in Pdfroo
     const ids = new Set(flow ? [] : plan.moving.app);
     pg.annots = (pg.annots || []).map((a) => { if (!ids.has(a.id)) return a; const c = JSON.parse(JSON.stringify(a)); const ex = fitShifts ? RF().shiftFor(appAnnotBox(a, view), fitShifts) : 0; moveAppAnnot(c, -(dy + ex)); return c; });
@@ -4161,6 +4225,199 @@
     } finally { pg.textEdits = JSON.parse(saved); }
   }
 
+  /* ---------------- Block selection: move a paragraph / bullet unit up or down, or delete it ----------------
+   * Units come from paragraphOf (the same walk "line below" uses). Moving swaps the unit with its neighbour unit in the
+   * same column (both keep their own spacing), or slides it one line into free space when the gap is big / it is last.
+   * Deleting drops the unit's drawing ops and pulls what's below in the column up. Everything is recorded as page
+   * shifts / drops (one undo in the app); unsafe layouts are refused with a message. */
+  async function blockContext(state, pi, lineId) {
+    const pg = state.pages[pi];
+    if (!pg || pg.src == null || !sources[pg.src] || !sources[pg.src].libDoc) return { err: 'This page has no text to select.' };
+    if (totalRotation(pg)) return { err: 'Rotate the page back to upright first.' };
+    const an = await analyzePage(pg.src, pg.index), geo = await pageGeometry(pg.src, pg.index);
+    const cur = visibleLines(currentLines(an, pg), geo, pg, lineId);
+    const la = layoutAround(an, cur, lineId, null, geo);
+    if (!la) return { err: 'That line could not be found.' };
+    const st = la.st, col = st.col, i = col.indexOf(la.row);
+    const unitAt = (k) => {
+      let item = null;
+      if (k === i) item = st.item;
+      else { const l2 = layoutAround(an, cur, col[k].lines[0].id, { x0: st.x0, x1: st.x1 }, geo); if (l2 && l2.st.item) { const ids = new Set(l2.st.item.rows.flatMap((r) => r.lines.map((l) => l.id))); const ks = col.map((r, j) => (r.lines.some((l) => ids.has(l.id)) ? j : -1)).filter((j) => j >= 0); if (ks.length) item = { start: Math.min(...ks), end: Math.max(...ks) }; } if (l2 && l2.st.heading && l2.st.heading.index === l2.st.col.indexOf(l2.row)) item = Object.assign(item || {}, { heading: true }); }
+      const u = paragraphOf(col, k, st.lead, item && item.start != null ? item : null);
+      const rows = col.slice(u.start, u.end + 1);
+      return Object.assign(u, { rows, top: Math.max(...rows.map((r) => r.top)), bot: Math.min(...rows.map((r) => r.bottom)), heading: !!(item && item.heading) || (k === i && !!st.heading && st.heading.index === i), lines: rows.flatMap((r) => r.lines) });
+    };
+    const unit = unitAt(i);
+    const bl = (a, b) => Math.abs(a.y - b.y) < 0.4 * Math.max(a.size, b.size);
+    let n = unit.end + 1; while (n < col.length && bl(col[n], col[unit.end])) n++;
+    let p = unit.start - 1; while (p >= 0 && bl(col[p], col[unit.start])) p--;
+    const next = n < col.length ? unitAt(n) : null, prev = p >= 0 ? unitAt(p) : null;
+    return { pg, an, geo, cur, st, col, unit, next, prev, view: an.page.view };
+  }
+  const blockBox = (c, u) => { const v = c.view, ls = u.lines.map(lineBox); const x0 = Math.min(...ls.map((b) => b[0])), x1 = Math.max(...ls.map((b) => b[2])); return { x: x0 - v[0], y: v[3] - u.top, w: x1 - x0, h: u.top - u.bot }; };
+  /** Selected unit for the UI: { ok, lineIds, box (display pts), kind, canUp, canDown } */
+  async function getBlock(state, pi, lineId) {
+    const c = await blockContext(state, pi, lineId);
+    if (c.err) return { ok: false, message: c.err };
+    return { ok: true, lineIds: c.unit.lines.map((l) => l.id), box: blockBox(c, c.unit), kind: c.unit.kind, heading: c.unit.heading, canUp: !!c.prev, canDown: true, rows: c.unit.rows.length };
+  }
+  function blockSafety(c, rects, label) {
+    const { geo, view, pg } = c, H = view[3] - view[1];
+    const inR = (bb) => RF().inRegion(bb, rects, 1);
+    for (const t of geo.texts || []) {
+      if (t.rot || t.hidden) continue;
+      const d0 = RF().shiftFor(t.box, pg.shifts), bb = [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0], cy = (bb[1] + bb[3]) / 2;
+      if (inR(bb)) { if (!t.movable) return 'Some text in ' + label + ' can’t be moved cleanly, so nothing was changed.'; continue; }
+      if (rects.some((r) => cy <= r.yTop && cy >= r.yBot && bb[2] > r.x0 + 1 && bb[0] < r.x1 - 1)) return 'A line in ' + label + ' runs across the column edge (its text is one piece), so it can’t be moved safely.';
+    }
+    for (const it of geo.scan.items) {
+      if (it.kind === 'shading' || (it.kind === 'path' && !it.painted)) continue;
+      const d = RF().itemShift(it, pg.shifts), bb = [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d];
+      if ((bb[3] - bb[1]) > 0.4 * H) continue;
+      for (const r of rects) {
+        const ov = Math.min(bb[2], r.x1) - Math.max(bb[0], r.x0); if (ov <= 2) continue;
+        const container = bb[0] <= r.x0 + 2 && bb[2] >= r.x1 - 2 && bb[3] >= r.yTop - 0.5 && bb[1] <= r.yBot + 0.5;
+        if (container && !it.stroke) continue;
+        const crossT = bb[3] > r.yTop + 0.5 && bb[1] < r.yTop - 0.5, crossB = bb[3] > r.yBot + 0.5 && bb[1] < r.yBot - 0.5;
+        const inside = bb[1] >= r.yBot - 0.5 && bb[3] <= r.yTop + 0.5;
+        if ((crossT || crossB) && !inside) return 'A box, rule or table crosses ' + label + ', so it can’t be moved safely.';
+      }
+    }
+    // every visible line that moves must be drawn by a page-stream run (not an embedded block)
+    const runs = (geo.texts || []).filter((t) => !t.rot).map((t) => { const d0 = RF().shiftFor(t.box, pg.shifts); return [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0]; });
+    for (const l of c.cur) {
+      if (l.inserted || l.edit || !inR(probeBox(l)) || !String(l.text).trim()) continue;
+      const pb = probeBox(l), cy = (pb[1] + pb[3]) / 2;
+      if (!runs.some((bb) => Math.abs((bb[1] + bb[3]) / 2 - cy) < 0.45 * l.size && Math.min(bb[2], pb[2]) - Math.max(bb[0], pb[0]) > -0.2 * l.size)) return 'Some text in ' + label + ' is drawn inside an embedded block, so it can’t be moved line by line.';
+    }
+    return null;
+  }
+  /** Clip check for one move: visible runs in rect r moved by dy must stay inside their clip (unless the clip moves too). */
+  function blockClipOk(c, r, dy) {
+    const { geo, pg } = c;
+    for (const t of geo.texts || []) {
+      if (t.rot || t.hidden) continue;
+      const d0 = RF().shiftFor(t.box, pg.shifts), bb = [t.box[0], t.box[1] + d0, t.box[2], t.box[3] + d0];
+      if (!RF().inRegion(bb, [r], 1)) continue;
+      const cl = geo.scan.textClip[t.i]; if (!cl) continue;
+      const ce = [cl[0], cl[1] + RF().growFor(cl, pg.shifts), cl[2], cl[3]];
+      const clipItem = geo.scan.items.find((it) => it.clip && RF().sameBox(it.bbox, cl));
+      if (clipItem && RF().inRegion(clipItem.bbox.map((v, k) => (k % 2 ? v + RF().itemShift(clipItem, pg.shifts) : v)), [r], 1)) continue;
+      if (bb[1] + dy < ce[1] - 1 || bb[3] + dy > ce[3] + 1) return false;
+    }
+    return true;
+  }
+  /** Plan one step for the unit holding lineId: op 'up' | 'down' | 'delete'. Nothing changes until applyBlock. */
+  async function planBlockStep(state, pi, lineId, op) {
+    const no = (message) => ({ ok: false, message });
+    const c = await blockContext(state, pi, lineId);
+    if (c.err) return no(c.err);
+    const { unit: B, st, view, cur } = c;
+    const lead = st.lead, OFF = 5000, x0 = st.x0, x1 = st.x1;
+    const R = (u, pad) => ({ x0, x1, yTop: u.top + (pad == null ? 1 : pad), yBot: u.bot - (pad == null ? 1 : pad) });
+    const edited = (u) => u.lines.some((l) => l.edit || l.inserted);
+    const moves = [];        // { ids, dy } for lines with edits (they move their edit)
+    const shifts = [];
+    const preview = { from: blockBox(c, B), to: null, moved: [], removed: null };
+    const dispR = (u, dy) => { const b = blockBox(c, u); return { x: b.x, y: b.y - dy, w: b.w, h: b.h }; };
+    if (op === 'delete') {
+      if (edited(B)) return no('This block has changes from this session — use Undo, or edit the text, instead of deleting it.');
+      const rb = R(B, 0.5);
+      const msg = blockSafety(c, [rb], 'this block'); if (msg) return no(msg);
+      const inB = (bb) => RF().inRegion(bb, [rb], 1);
+      const shows = (c.geo.texts || []).filter((t) => !t.rot && inB(t.box.map((v, k) => (k % 2 ? v + RF().shiftFor(t.box, c.pg.shifts) : v)))).map((t) => t.i);
+      const items = c.geo.scan.items.map((it, k) => ({ it, k })).filter(({ it }) => it.kind !== 'shading' && !(it.kind === 'path' && !it.painted) && (() => { const d = RF().itemShift(it, c.pg.shifts), bb = [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d]; return bb[0] >= rb.x0 - 1 && bb[2] <= rb.x1 + 1 && bb[1] >= rb.yBot - 1 && bb[3] <= rb.yTop + 1; })()).map(({ k }) => k);
+      const annots = c.geo.annots.filter((a) => inB(a.bbox.map((v, k) => (k % 2 ? v + RF().shiftFor(a.bbox, c.pg.shifts) : v)))).map((a) => a.i);
+      const drops = { shows, items, annots, lines: B.lines.map((l) => (l.orig ? l.orig.id : l.id)) };
+      preview.removed = blockBox(c, B);
+      if (c.next) {
+        const N = c.next, dy = B.top - N.top;
+        const r = { x0, x1, yTop: B.bot - 0.5, yBot: view[1] - 2 };
+        const furn = await furnitureIds(c.pg);
+        const foot = c.col.filter((q) => q.lines.every((l) => furn.has(l.id)) && q.y < N.bot);
+        if (foot.length) r.yBot = Math.max(...foot.map((q) => q.top)) + 0.5;
+        const m2 = blockSafety(c, [r], 'the content below'); if (m2) return no(m2);
+        const below = cur.filter((l) => RF().inRegion(probeBox(l), [r], 1));
+        if (below.some((l) => l.edit || l.inserted)) below.filter((l) => l.edit).forEach((l) => moves.push({ id: l.id, dy }));
+        shifts.push({ rects: [r], dy: Math.round(dy * 1000) / 1000, tol: 1 });
+        preview.moved = below.map((l) => { const b = lineBox(l); return { x: b[0] - view[0], y: view[3] - b[3], w: b[2] - b[0], h: b[3] - b[1] }; });
+        preview.dy = dy;
+      }
+      return { ok: true, op, lineId, drops, shifts, moves, preview, summary: 'Deletes this ' + (B.kind === 'item' ? 'bullet' : 'paragraph') + (shifts.length ? ' · what’s below moves up' : '') };
+    }
+    const down = op === 'down', N = down ? c.next : c.prev;
+    const gap = N ? (down ? B.bot - N.top : N.bot - B.top) : Infinity;
+    // free space: slide by one line
+    if (!N || gap > 2.5 * lead) {
+      const dy = down ? -lead : lead;
+      if (down && B.bot + dy < view[1] + 30) return no('There’s no room below this block on the page.');
+      if (!down && (N ? N.bot : view[3] - 30) < B.top + dy + 0.5 * lead) return no('There’s no room above this block.');
+      if (!down && !N && B.top + dy > view[3] - 30) return no('There’s no room above this block.');
+      const rb = R(B);
+      const msg = blockSafety(c, [rb], 'this block'); if (msg) return no(msg);
+      if (!blockClipOk(c, rb, dy)) return no('This block sits in a clipped area; moving it would hide part of it.');
+      // the strip it moves into must be empty
+      const zone = down ? [x0, B.bot + dy - 1, x1, B.bot - 1] : [x0, B.top + 1, x1, B.top + dy + 1];
+      const hit = (bb) => bb[2] > zone[0] + 1 && bb[0] < zone[2] - 1 && bb[3] > zone[1] && bb[1] < zone[3];
+      if (cur.some((l) => !B.lines.includes(l) && hit(lineBox(l)))) return no('Something is in the way of this block.');
+      for (const it of c.geo.scan.items) { if (it.kind === 'shading' || (it.kind === 'path' && !it.painted)) continue; const d = RF().itemShift(it, c.pg.shifts), bb = [it.bbox[0], it.bbox[1] + d, it.bbox[2], it.bbox[3] + d]; if ((bb[3] - bb[1]) < 0.4 * (view[3] - view[1]) && !RF().inRegion(bb, [rb], 1) && hit(bb)) return no('A box or rule is in the way of this block.'); }
+      shifts.push({ rects: [rb], dy, tol: 1 });
+      B.lines.filter((l) => l.edit).forEach((l) => moves.push({ id: l.id, dy }));
+      preview.to = dispR(B, dy);
+      return { ok: true, op, lineId, shifts, moves, preview, summary: (down ? 'Moves down' : 'Moves up') + ' one line into the free space' };
+    }
+    if (N.heading || B.heading) return no(down ? 'The next block is a section heading — blocks move within their section.' : 'The block above is a section heading — blocks move within their section.');
+    const rb = R(B, Math.min(1, gap / 2)), rn = R(N, Math.min(1, gap / 2));
+    const msg = blockSafety(c, [rb], 'this block') || blockSafety(c, [rn], 'the block it swaps with'); if (msg) return no(msg);
+    // swap (each keeps its height, the gap between them stays)
+    const dB = down ? N.bot - B.bot : N.top - B.top, dN = down ? B.top - N.top : B.bot - N.bot;
+    if (!blockClipOk(c, rb, dB) || !blockClipOk(c, rn, dN)) return no('These blocks sit in different clipped areas; swapping them would hide part of them.');
+    shifts.push({ rects: [rb], dy: OFF, tol: 1 });
+    shifts.push({ rects: [rn], dy: Math.round(dN * 1000) / 1000, tol: 1 });
+    shifts.push({ rects: [{ x0: rb.x0, x1: rb.x1, yTop: rb.yTop + OFF, yBot: rb.yBot + OFF }], dy: Math.round((dB - OFF) * 1000) / 1000, tol: 1 });
+    B.lines.filter((l) => l.edit).forEach((l) => moves.push({ id: l.id, dy: dB }));
+    N.lines.filter((l) => l.edit).forEach((l) => moves.push({ id: l.id, dy: dN }));
+    preview.to = dispR(B, dB); preview.moved = [dispR(N, dN)]; preview.swapFrom = blockBox(c, N);
+    return { ok: true, op, lineId, shifts, moves, preview, summary: down ? 'Moves below the next block · that block moves up' : 'Moves above the previous block · that block moves down' };
+  }
+  function applyBlockStep(state, pi, plan, appMoves) {
+    const pg = state.pages[pi];
+    const view = pg.view || null; void view;
+    pg.shifts = (pg.shifts || []).concat(plan.shifts || []);
+    if (plan.drops) pg.drops = (pg.drops || []).concat([plan.drops]);
+    pg.textEdits = (pg.textEdits || []).map((e) => { const m = (plan.moves || []).find((x) => x.id === e.lineId); return m ? Object.assign({}, e, { move: { dx: e.move ? e.move.dx : 0, dy: Math.round(((e.move ? e.move.dy : 0) + m.dy) * 1000) / 1000 } }) : e; });
+    void appMoves;
+  }
+  /** Plan `steps` steps (op 'up' | 'down') or a delete on a copy of the page; returns one combined plan. */
+  async function planBlock(state, pi, lineId, op, steps) {
+    const pg = state.pages[pi];
+    const copy = Object.assign({}, pg, { shifts: (pg.shifts || []).slice(), drops: (pg.drops || []).slice(), textEdits: (pg.textEdits || []).slice() });
+    const st2 = Object.assign({}, state, { pages: state.pages.slice() }); st2.pages[pi] = copy;
+    const n = op === 'delete' ? 1 : Math.max(1, steps | 0);
+    let first = null, last = null; const all = { shifts: [], drops: null, moves: [] };
+    for (let k = 0; k < n; k++) {
+      const p = await planBlockStep(st2, pi, lineId, op);
+      if (!p.ok) { if (!last) return p; last.partial = p.message; break; }
+      first = first || p; last = p;
+      applyBlockStep(st2, pi, p);
+      all.shifts.push(...p.shifts); if (p.drops) all.drops = p.drops; all.moves.push(...p.moves);
+    }
+    // Pdfroo's own annotations inside the unit / the moved neighbours follow the text
+    const an = await analyzePage(pg.src, pg.index), view = an.page.view;
+    const app = (pg.annots || []).map((a) => { const b = appAnnotBox(a, view); const d = RF().shiftFor(b, all.shifts) - RF().shiftFor(b, []); return { id: a.id, dy: d }; }).filter((x) => x.dy);
+    const preview = Object.assign({}, last.preview, { from: first.preview.from, steps: n });
+    return { ok: true, op, lineId, steps: n, shifts: all.shifts, drops: all.drops, moves: all.moves, app, preview, summary: last.summary + (n > 1 ? ` (${n} steps)` : ''), partial: last.partial };
+  }
+  async function applyBlock(state, pi, plan) {
+    if (!plan || !plan.ok) return { ok: false };
+    const pg = state.pages[pi];
+    const an = await analyzePage(pg.src, pg.index), view = an.page.view;
+    applyBlockStep(state, pi, plan);
+    const ids = new Map((plan.app || []).map((x) => [x.id, x.dy]));
+    if (ids.size) pg.annots = (pg.annots || []).map((a) => { if (!ids.has(a.id)) return a; const c2 = JSON.parse(JSON.stringify(a)); moveAppAnnot(c2, -ids.get(a.id)); return c2; });
+    void view;
+    return { ok: true };
+  }
   root.PdfEngine = {
     // lifecycle / loading
     load, getPageCount, getSourceBytes, getSignatureInfo, hasSource, closeAll, createState, newPage, uid,
@@ -4171,7 +4428,7 @@
     // export
     // existing-text editing (tiers 1–3; see README)
     _droppedReps: () => lastDroppedReps.slice(), _pageGeometry: pageGeometry,
-    getTextLines, editTextLine, moveTextLine, getAddOptions, planInsert, applyInsert, flowPreviewPages, planWrapEdit, previewWrapEdit, applyWrapEdit, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
+    getTextLines, editTextLine, moveTextLine, getAddOptions, planInsert, applyInsert, getBlock, planBlock, applyBlock, flowPreviewPages, planWrapEdit, previewWrapEdit, applyWrapEdit, displayDeltaToPdf, getLineStyleInfo, findText, replaceHits, getLineEditorFont, verifyIndicLine, confirmIndicReading, _analyzePage: analyzePage, _learnStats: learnStats,
     _fontReading: async (src, index, lineId, dbg) => { const an = await analyzePage(src, index); const ln = an.lines.find((l) => l.id === lineId); fontDbg = dbg || null; try { return ln && await fontReadingFor(an, ln, null); } finally { fontDbg = null; } },
     exportWithAnnotations, getLastExportFonts: () => Object.assign({}, lastExportFonts), isComplexScript: (t) => COMPLEX_SCRIPT_RE.test(String(t).replace(INDIC_STRIP_RE, '')), hasIndic, ensureScriptFonts, indicMalformed,
     // geometry shared with the UI

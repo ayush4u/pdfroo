@@ -1013,3 +1013,78 @@ kbd { display: inline-block; min-width: 24px; padding: 2px 7px; border-radius: 6
 .reflow-preview.uncertain .rf-edge-knob { stroke: #d97706; fill: #fff4e5; }
 .wrap-offer .btn { pointer-events: auto; }
 .add-panel.side { position: fixed; z-index: 40; max-height: calc(100vh - 160px); overflow: auto; }
+
+/* ---------- Compact property bar (Oct 2026): one tidy row, icon buttons, popovers ---------- */
+:root { --tb-h: 34px; --tb-r: 9px; }
+.propbar-inner { gap: 4px; padding: 3px 6px; min-height: 44px; }
+@media (min-width: 641px) {
+  .propbar-inner { flex-wrap: nowrap; }
+  .propbar .font-chip { max-width: 180px; }
+}
+.propbar .prop-sep { height: 20px; margin: 0 3px; }
+.propbar .icon-btn, .propbar .tb-btn, .propbar .prop-btn, .propbar .stepper, .propbar .seg { height: var(--tb-h); min-height: var(--tb-h); border-radius: var(--tb-r); }
+.tb-btn { width: var(--tb-h); min-width: var(--tb-h); display: inline-grid; grid-auto-flow: column; place-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; flex: none; transition: background var(--t), color var(--t); }
+.tb-btn:hover:not(:disabled) { background: var(--surface-2); }
+.tb-btn .i { width: 18px; height: 18px; }
+.tb-btn.with-text { width: auto; padding: 0 10px 0 8px; font-weight: 600; font-size: 13px; }
+.tb-btn .tb-glyph { font-weight: 700; font-size: 16px; line-height: 1; }
+.tb-btn.with-text .tb-glyph { font-size: 13px; }
+.tb-btn.open, .tb-btn[aria-pressed="true"], .tb-btn.active { background: var(--primary-soft); color: var(--primary); }
+.tb-btn.danger { color: var(--danger); }
+.tb-btn.danger.active { background: var(--danger-soft); }
+.tb-dot { width: 18px; height: 18px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.18), 0 0 0 2px var(--surface); }
+.propbar .stepper { background: var(--surface-2); padding: 0 1px; }
+.propbar .stepper .icon-btn { width: 30px; height: 30px; min-height: 30px; }
+.propbar .stepper output { min-width: 34px; font-size: 13px; }
+.propbar .font-chip { margin-left: 2px; padding: 3px 9px; font-size: 11.5px; font-weight: 600; }
+.propbar .prop-hint { font-size: 12.5px; padding: 0 4px; }
+.propbar .prop-btn { height: var(--tb-h); min-height: var(--tb-h); padding: 0 10px; font-size: 13px; }
+.tb-apply { height: 32px; padding: 0 14px; border-radius: var(--tb-r); font-size: 13px; flex: none; }
+.tb-pop-wrap { position: relative; display: inline-flex; flex: none; }
+.tb-pop { position: fixed; z-index: 70; padding: 8px; border-radius: 12px; background: var(--surface); color: var(--text); border: 1px solid var(--border); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 6px; min-width: 120px; max-width: calc(100vw - 16px); }
+.tb-pop[hidden] { display: none; }
+.tb-pop .swatches { flex-wrap: wrap; max-width: 260px; }
+.tb-menu { padding: 4px; gap: 2px; }
+.tb-menu .tb-item, .tb-menu .seg-btn { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: flex-start; background: transparent; height: 36px; min-height: 36px; padding: 0 10px; border-radius: 8px; font-weight: 550; font-size: 13.5px; text-align: left; }
+.tb-menu .tb-item:hover, .tb-menu .seg-btn:hover { background: var(--surface-2); }
+.tb-menu .seg { flex-direction: column; background: transparent; padding: 0; height: auto; min-height: 0; }
+.tb-menu .seg-btn[aria-checked="true"] { background: var(--primary-soft); color: var(--primary); box-shadow: none; }
+.tb-menu .tb-item span, .tb-menu .seg-btn span { display: inline !important; }
+.tb-menu .tb-item .i, .tb-menu .seg-btn .i { width: 16px; height: 16px; flex: none; }
+.tb-move .nudge-pad { grid-template-columns: repeat(3, auto); grid-template-areas: ". u ." "l d r"; justify-content: center; }
+.tb-move .nudge-up { grid-area: u; } .tb-move .nudge-left { grid-area: l; } .tb-move .nudge-down { grid-area: d; } .tb-move .nudge-right { grid-area: r; }
+.tb-pop-row { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+.tb-pop-row .prop-btn { width: auto !important; padding: 0 10px !important; background: var(--surface-2) !important; height: 34px; min-height: 34px; }
+.tb-pop-row .prop-btn span { display: inline !important; font-size: 12.5px; }
+.tb-pop-note { margin: 0; font-size: 11.5px; color: var(--muted); text-align: center; }
+.block-chip::before { background: var(--primary) !important; }
+@media (max-width: 640px) {
+  :root { --tb-h: 40px; }
+  .propbar-inner { padding: 2px 6px; min-height: 48px; gap: 2px; flex-wrap: nowrap; }
+  .tb-btn { width: 40px; min-width: 40px; }
+  .tb-btn.with-text { padding: 0 8px; }
+  .propbar .font-chip { max-width: 34vw; }
+  .propbar .prop-hint span { white-space: nowrap; }
+  .propbar .stepper .icon-btn { width: 34px; height: 34px; min-height: 34px; }
+  .tb-menu .tb-item, .tb-menu .seg-btn { height: 44px; min-height: 44px; font-size: 15px; }
+  .tb-pop { max-width: calc(100vw - 16px); }
+}
+/* block selection preview */
+.blk-preview .blk-sel { fill: rgba(91, 80, 240, .08); stroke: var(--primary); cursor: grab; touch-action: none; vector-effect: non-scaling-stroke; }
+.blk-preview .blk-grip { fill: var(--primary); opacity: .8; cursor: grab; touch-action: none; }
+.blk-preview .blk-ghost { fill: rgba(91, 80, 240, .12); stroke: var(--primary); stroke-dasharray: 4 3; }
+.blk-preview .blk-target { fill: rgba(22, 163, 74, .10); stroke: #16a34a; stroke-dasharray: 5 3; }
+.blk-preview .blk-moved { fill: rgba(37, 99, 235, .06); stroke: #2563eb; stroke-dasharray: 3 2; }
+.blk-preview .blk-removed, .blk-preview.del .blk-sel { fill: rgba(220, 38, 38, .12); stroke: #dc2626; }
+/* add-line side panel / bottom sheet: same look as the bar */
+.add-panel { border-radius: 12px; padding: 10px 12px; gap: 8px; }
+.add-panel .add-head strong { font-size: 13.5px; font-weight: 650; }
+.add-panel .add-x { width: var(--tb-h); height: var(--tb-h); border-radius: var(--tb-r); }
+.add-panel .add-input { height: 38px; border-radius: var(--tb-r); font-size: 14px; }
+.add-panel .add-actions .btn { height: 34px; padding: 0 14px; border-radius: var(--tb-r); font-size: 13px; }
+.add-panel .add-info { font-size: 12.5px; }
+.add-panel.sheet { border-radius: 14px 14px 12px 12px; }
+.add-panel.sheet::before { content: ""; align-self: center; width: 36px; height: 4px; border-radius: 2px; background: var(--border-strong); margin: -4px 0 2px; }
+@media (max-width: 640px) {
+  .propbar::after { content: ""; position: sticky; right: 0; flex: none; width: 20px; align-self: stretch; margin-left: -20px; pointer-events: none; background: linear-gradient(90deg, transparent, var(--surface)); }
+}
