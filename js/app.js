@@ -1293,6 +1293,7 @@
     if (!ln.indic) E.getLineStyleInfo(pg, ln.id).then((info) => { if (ui.lineEdit && ui.lineEdit.inp === inp && info) { ui.lineEdit.info = info; buildPropbar(); positionLineEditor(); } }).catch((err) => console.warn(err));
     pageWrap.append(inp);
     positionLineEditor();
+    setTimeout(() => { if (ui.lineEdit && ui.lineEdit.inp === inp) keepLineAbove(inp); }, 350);
     E.getLineEditorFont(pg, ln.id).then((f) => { if (f && ui.lineEdit && ui.lineEdit.inp === inp) { ui.lineEdit.font = f; positionLineEditor(); } }).catch(() => {});
     inp.addEventListener('input', positionLineEditor);
     inp.addEventListener('input', () => {
@@ -1515,7 +1516,17 @@
     const o = addOptionsFor(pg, lineId);
     if (!o || !(o.line || o.bullet || o.section)) return;
     const trig = tbBtn('i-plus', 'Add a line, bullet or section like this one (Enter adds a line below)', null, 'add-trigger', 'Add');
-    inner.appendChild(popover('add', trig, (pop) => {
+    // phones: close the keyboard on purpose and show the options as a bottom sheet (no reliance on per-browser keyboard handling)
+    trig.addEventListener('click', () => {
+      if (!phoneUI()) return;
+      const a = document.activeElement;
+      if (a && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName))) {
+        let caret = null; try { const sl = getSelection(); if (sl.rangeCount && a.contains(sl.anchorNode)) caret = sl.getRangeAt(0).cloneRange(); } catch (_) {}
+        ui.addSheetRestore = { lineId, caret, start: a.selectionStart };
+        a.blur();
+      }
+    }, true);
+    const wrapEl = popover('add', trig, (pop) => {
       pop.classList.add('tb-menu', 'add-like'); pop.setAttribute('aria-label', 'Add like this');
       [['line', 'Line below', 'i-plus'], ['bullet', 'Bullet below', 'i-plus'], ['section', 'Section like this', 'i-layers']].forEach(([m, t, ic]) => {
         if (!o[m]) return;
@@ -1523,10 +1534,13 @@
           closePops();
           if (ui.lineEdit) { await commitLineEdit(); }
           startAdd(m, lineId);
+          if (ui.addSheetRestore) { ui.addSheetRestore = null; requestAnimationFrame(() => { const t = document.querySelector('.add-panel .add-input') || document.querySelector('.line-editor'); if (t) { t.focus(); try { if (t.isContentEditable) { const r = document.createRange(); r.selectNodeContents(t); r.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); } else if (t.setSelectionRange) { const n = t.value.length; t.setSelectionRange(n, n); } } catch (_) {} } }); }
         });
         b.classList.add('add-' + m); pop.appendChild(b);
       });
-    }));
+    });
+    sheetify(wrapEl.querySelector('.tb-pop'), phoneUI);
+    inner.appendChild(wrapEl);
   }
   function startAdd(mode, anchorId, extra) {
     const pg = curPage(); if (!pg) return;
@@ -1899,6 +1913,56 @@
   }
 
   /* ---------------- Property bar ---------------- */
+  const phoneUI = () => isPhone() || matchMedia('(pointer: coarse)').matches || window.innerWidth <= 640;
+  // phones: show a toolbar popover as a fixed bottom sheet with a backdrop (tap backdrop to close)
+  function sheetify(pop, when) {
+    new MutationObserver(() => {
+      const open = !pop.hidden && when();
+      pop.classList.toggle('add-sheet', open);
+      let bd = document.querySelector('.add-sheet-backdrop');
+      if (open && !bd) {
+        bd = document.createElement('div'); bd.className = 'add-sheet-backdrop';
+        bd.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); closePops(); bd.remove(); }, true);
+        pop.parentNode.insertBefore(bd, pop);
+      } else if (!open && bd && !document.querySelector('.tb-pop.add-sheet:not([hidden])')) bd.remove();
+      if (open) { pop.style.left = ''; pop.style.top = ''; }
+    }).observe(pop, { attributes: true, attributeFilter: ['hidden'] });
+  }
+  // phones: fit the editing toolbar to the screen; extras go into a ⋯ sheet
+  const KEEP_RX = /bold|italic|colou?r|align|move|add|paragraph|¶|block/i;
+  function fitPropbar(inner) {
+    if (!phoneUI() || !(ui.lineEdit || ui.newLine)) return;
+    if (propbar.scrollWidth <= propbar.clientWidth + 1) return;
+    const trig = tbBtn('i-more', 'More', null, 'more-trigger', '⋯');
+    if (!trig.querySelector('use') || !document.getElementById('i-more')) trig.textContent = '⋯';
+    const extras = [];
+    const wrap = popover('more', trig, (pop) => { pop.classList.add('tb-menu', 'more-menu'); });
+    const pop = wrap.querySelector('.tb-pop'); sheetify(pop, phoneUI);
+    inner.appendChild(wrap);
+    const kids = [...inner.children].filter((c) => c !== wrap).reverse();
+    for (const c of kids) {
+      if (propbar.scrollWidth <= propbar.clientWidth + 1) break;
+      if (c.classList.contains('prop-sep')) { c.remove(); continue; }
+      const lbl = [c.getAttribute('aria-label'), c.title, c.className, ...[...c.querySelectorAll('[aria-label],[title]')].map((x) => (x.getAttribute('aria-label') || '') + ' ' + (x.title || ''))].join(' ');
+      if (KEEP_RX.test(lbl)) continue;
+      extras.unshift(c);
+      pop.prepend(c);
+    }
+    if (!extras.length) wrap.remove();
+    propbar.scrollLeft = 0;
+  }
+  // scroll the edited line so it sits above the toolbar (once per edit start; no zoom, no resize listeners)
+  function keepLineAbove(inp) {
+    if (!inp || !inp.isConnected) return;
+    const bar = propbar.getBoundingClientRect(), r = inp.getBoundingClientRect();
+    if (!bar.height) return;
+    const limit = bar.top - 8;
+    if (r.bottom > limit || r.top < 0) {
+      let sc = inp.parentElement; while (sc && !(sc.scrollHeight > sc.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+      const dy = r.top < 0 ? r.top - 8 : r.bottom - limit;
+      (sc || window).scrollBy(0, dy);
+    }
+  }
   function buildPropbar() {
     propbar.replaceChildren();
     if (!doc) return;
@@ -2040,6 +2104,7 @@
       inner.appendChild(del);
     }
     propbar.appendChild(inner);
+    fitPropbar(inner);
   }
   /** Text toolbar for an existing line: size, bold / italic (when the font family allows), colour, alignment. */
   function lineStyleTools(inner, sep, hint) {
