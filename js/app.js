@@ -165,7 +165,11 @@
     setTool('select');
     renderAll();
     renderSigNotice();
+    // Resume Rebuild (js/resume/ui.js) listens for this to offer the "Looks like a resume" card
+    try { document.dispatchEvent(new CustomEvent('pdfroo:opened', { detail: { src: res.src, name: res.name, bytes: E.getSourceBytes(res.src) || bytes, pages: res.pageCount } })); } catch (e) { /* ignore */ }
   }
+  window.PdfrooApp = { openPdf: (b, n) => openPdf(b, n), busy: (on, m) => busy(on, m), toast: (m, k) => toast(m, k), hasDoc: () => !!doc,
+    currentSrc: () => (doc && doc.pages[0] ? doc.pages[0].src : null), docName: () => (doc ? doc.name : '') };
 
   /* ---------------- Digital signatures ---------------- */
   // A signed PDF gets a non-blocking banner; the first edit of any kind asks for confirmation.
