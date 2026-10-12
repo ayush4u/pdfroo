@@ -55,7 +55,7 @@
     document.addEventListener('keydown', esc);
     document.body.appendChild(dlg); drop.focus();
   }
-  function startBlank() { S.R = M.blank(); S.photo = null; S.conf = {}; S.srcBytes = null; editorScreen(); }
+  function startBlank() { S.R = M.blank(); S.photo = null; S.lowAll = false; S.conf = {}; S.srcBytes = null; editorScreen(); }
   async function fromFile(f) {
     const bytes = new Uint8Array(await f.arrayBuffer());
     await fromBytes(bytes, f.name);
@@ -64,7 +64,7 @@
     const A = root.PdfrooApp; A && A.busy(true, 'Reading your resume…');
     try {
       if (src == null) { const res = await root.PdfEngine.load(bytes.slice(0), name); src = res.src; }
-      const out = await X.extract(src, bytes, {});
+      const out = await X.extract(src, bytes, { onStatus: (m) => { if (A && m && m.status) A.busy(true, 'Reading a scanned resume… ' + (m.progress ? Math.round(m.progress * 100) + '%' : '')); } });
       if (out.refusal) { toast(out.message, 'error'); return; }
       if (out.nSections < 3) { notResume(bytes, name, out); return; }
       take(out, bytes, name);
@@ -83,7 +83,7 @@
     document.body.appendChild(card);
   }
   function take(out, bytes, name) {
-    S.R = out.resume; S.conf = out.conf || {}; S.srcBytes = bytes; S.srcName = name;
+    S.R = out.resume; S.conf = out.conf || {}; S.lowAll = !!out.ocr; S.srcBytes = bytes; S.srcName = name;
     S.photo = out.photo ? { bytes: out.photo.bytes, type: out.photo.type } : null;
     S.R.meta.pdfroo.photoShape = S.photo ? 'round' : 'skip';
     syncPhotoToModel(); M.save(S.R);
@@ -104,7 +104,7 @@
   async function onOpened(ev) {
     S.detected = null; const eb = $('#rzEdBtn'); if (eb) { eb.classList.remove('rz-hint'); eb.querySelector('.rz-ed-lbl').textContent = 'Rebuild as resume'; }
     const d = ev.detail || {}; if (!d.bytes || (d.pages || 1) > 2) return;
-    let out; try { out = await X.extract(d.src, d.bytes, { maxPages: 2 }); } catch (e) { return; }
+    let out; try { out = await X.extract(d.src, d.bytes, { maxPages: 2, ocr: false }); } catch (e) { return; }
     if (!out || out.refusal || out.isResume !== 'high' || out.nSections < 3) return;   // unsure: show nothing
     if (root.PdfrooApp.currentSrc && root.PdfrooApp.currentSrc() !== d.src) return;
     // non-blocking: nothing covers the page; the top-bar button turns into a "Looks like a resume" pill that opens the card
@@ -132,7 +132,7 @@
   }
 
   /* ---------- Check what we found ---------- */
-  const weak = (k, v) => !String(v || '').trim() ? ['basics.name', 'basics.email', 'basics.phone'].includes(k) : (S.conf[k] != null && S.conf[k] < 0.6);
+  const weak = (k, v) => S.lowAll ? true : !String(v || '').trim() ? ['basics.name', 'basics.email', 'basics.phone'].includes(k) : (S.conf[k] != null && S.conf[k] < 0.6);
   function joinParts(...a) { return a.filter((x) => String(x || '').trim()).join(' · '); }
   function checkScreen() {
     const main = show('check'), R = S.R, b = R.basics, P = R.meta.pdfroo;
@@ -172,6 +172,7 @@
     const orig = h('div', { class: 'rz-orig', 'aria-label': 'Your original PDF' });
     main.append(h('div', { class: 'rz-wrap' },
       h('span', { class: 'rz-chip' }, 'Step 1 of 2'), h('h1', null, 'Check what we found'),
+      S.lowAll ? h('p', { class: 'rz-note' }, 'This PDF is a scan, so we read it with text recognition. Every field is low confidence — please check each one.') : null,
       h('p', { class: 'rz-sub' }, 'We filled these in from your PDF. ', nWeak ? h('b', { class: 'rz-amb' }, nWeak + ' field' + (nWeak > 1 ? 's' : '')) : 'All fields', nWeak ? (nWeak > 1 ? ' in amber need a quick look.' : ' in amber needs a quick look.') : ' look fine.'),
       h('div', { class: 'rz-checkgrid' }, orig, form)));
     if (S.srcBytes) renderPdfInto(S.srcBytes, orig, 1, 1.4).catch(() => {});
@@ -321,7 +322,7 @@
   async function atsScreen() {
     const A = root.PdfrooApp; A && A.busy(true, 'Making your PDF…');
     let out, chk;
-    try { out = await RR.build(S.R, { photo: S.photo }); chk = await RR.atsCheck(out.bytes, S.R); }
+    try { out = await RR.build(S.R, { photo: S.photo }); chk = await RR.atsCheck(out.bytes, S.R, out.order); }
     catch (e) { toast('Could not make the PDF: ' + e.message, 'error'); return; }
     finally { A && A.busy(false); }
     const main = show('ats'); const ok = chk.checks.every((c) => c.ok);
@@ -332,7 +333,7 @@
       h('div', { class: 'rz-atsgrid' }, pv,
         h('pre', { class: 'rz-panel rz-text', id: 'rzAtsText', tabindex: '0', 'aria-label': 'Extracted text' }, chk.text),
         h('div', { class: 'rz-panel rz-checks' },
-          h('h3', null, ok ? 'All 4 checks passed' : chk.checks.filter((c) => c.ok).length + ' of 4 checks passed'),
+          h('h3', null, ok ? 'All ' + chk.checks.length + ' checks passed' : chk.checks.filter((c) => c.ok).length + ' of ' + chk.checks.length + ' checks passed'),
           h('ul', null, chk.checks.map((c) => h('li', { class: c.ok ? 'ok' : 'bad' }, h('i', null, c.ok ? '✓' : '!'), c.label))),
           ok ? null : h('p', { class: 'rz-warn' }, 'Something is missing or out of order — go back and check the fields marked above, or download anyway.'),
           h('button', { type: 'button', class: 'rz-btn rz-dl', id: 'rzSave', onclick: () => saveFile(out.bytes) }, ok ? 'Looks good, download ⬇' : 'Download anyway ⬇'),

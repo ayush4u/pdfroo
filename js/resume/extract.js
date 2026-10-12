@@ -45,6 +45,9 @@
     return null;
   }
   const clean = (t) => String(t || '').replace(/\s+/g, ' ').replace(/\s+([,;:])/g, '$1').trim();
+  const CITY_RE = /^(?:Mumbai|Pune|Delhi|New Delhi|Bengaluru|Bangalore|Hyderabad|Chennai|Kolkata|Noida|Gurgaon|Gurugram|Ahmedabad|Jaipur|Kochi|Indore|Lucknow|Chandigarh|Nagpur|Remote|Thane|Navi Mumbai|Coimbatore|Bhopal|Goa|London|Singapore|Dubai|[A-Z][a-z]+,\s*[A-Z]{2})$/;
+  /** drop empty/repeated separators left after taking out dates and places: "A • • OP" -> "A" */
+  const tidy = (t) => { let s = clean(t); for (let i = 0; i < 4; i++) s = s.replace(/(?:\s*(?:[•·|]|\s[-–—]\s)\s*){2,}/g, ' · ').replace(/^\s*(?:[•·|,–—-]\s*)+|(?:\s*[•·|,–—-])+\s*$/g, '').trim(); return s; };
   const headKey = (t) => {
     let s = clean(t);
     if (/^(?:[A-Za-z&] ){3,}[A-Za-z&]$/.test(s)) s = s.replace(/ /g, '');           // letter-spaced "E X P E R I E N C E"
@@ -179,30 +182,62 @@
   }
   function bulletsFrom(lines) {
     const out = [];
-    for (const l of lines) {
-      const raw = l.text, isB = l.bullet || BULLET_STRIP.test(raw);
+    for (let l of markBullets(lines)) {
+      if (LONE_BULLET.test(l.text)) { l = Object.assign({}, l, { text: '' }); }
+      const raw = l.text, isB = l.isB || l.bullet || BULLET_STRIP.test(raw);
       const t = clean(raw.replace(BULLET_STRIP, ''));
       if (!t) continue;
       const last = out[out.length - 1];
-      if (!isB && last && !/[.!?]$/.test(last) && l.gap < 1.6 * l.size && /^[a-z(0-9]/.test(t)) out[out.length - 1] = last + ' ' + t;
+      if (!isB && last && (l.cont || (!/[.!?]$/.test(last) && l.gap < 1.6 * l.size && /^[a-z(0-9]/.test(t)))) out[out.length - 1] = last + ' ' + t;
       else out.push(t);
     }
     return out;
   }
-  function entries(lines, isEdu) {
+  const LONE_BULLET = /^\s*[•\-–—▪◦●○■□➢➤►▸*·‣⁃✓✔]\s*$/;
+  const TITLE_RE = /\b(engineer|developer|manager|analyst|intern|designer|consultant|lead|associate|specialist|architect|scientist|officer|executive|director|head|trainee|administrator|tester|programmer|accountant|teacher|professor|researcher|founder|co-founder|vp|president)\b/i;
+  /** Bullet structure: a lone glyph line takes the next line as its text; wrapped lines after a bullet stay in it. */
+  function markBullets(lines) {
+    const out = []; let pending = false, inB = false;
+    for (const l0 of lines) {
+      if (LONE_BULLET.test(l0.text)) { pending = true; continue; }
+      const l = Object.assign({}, l0);
+      const glyph = l.bullet || BULLET_STRIP.test(l.text) || pending;
+      if (pending) { l.bullet = true; l.text = '• ' + l.text.replace(BULLET_STRIP, ''); }
+      pending = false;
+      if (glyph) { l.isB = true; inB = true; }
+      else if (inB && !l.bold && !(findRange(l.text) && !findRange(l.text).single) && l.gap < 2 * l.size && (/^[a-z(]/.test(l.text.trim()) || !/[.;!?]$/.test(String(out[out.length - 1] && out[out.length - 1].text).trim()))) l.cont = true;
+      else inB = false;
+      out.push(l);
+    }
+    return out;
+  }
+  const isHeaderLine = (l) => {
+    if (l.isB || l.cont) return false;
+    const r = findRange(l.text); if (!r) return false;
+    const rest = clean(l.text.replace(r.raw, ' ')).replace(/[^A-Za-z]/g, '');
+    if (r.single && !/(?:19|20)\d{2}\s*$/.test(l.text.trim())) return false;    // "2024: did X" is not a job header
+    if (/^\s*(?:19|20)\d{2}\s*[:\-–]?\s+[a-z]/i.test(l.text) && !RANGE_RE.test(l.text.slice(0, 25))) return false;
+    return rest.length >= 3 && l.text.length <= 110;
+  };
+  function entries(lines0, isEdu) {
+    const lines = markBullets(lines0);
     const groups = [];
     let cur = null;
     lines.forEach((l, i) => {
       const r = findRange(l.text);
-      const prev = lines[i - 1];
-      const starts = !cur || (r && !(cur.range && cur.lines.length <= 1)) || (l.bold && !l.bullet && prev && l.gap > 1.5 * l.size && !(prev.bold));
-      if (starts && cur && r && !cur.range && cur.lines.length <= 2 && !cur.lines.some((x) => x.bullet || BULLET_STRIP.test(x.text))) { cur.lines.push(l); cur.range = r; return; }
-      if (starts) { cur = { lines: [l], range: r }; groups.push(cur); } else { cur.lines.push(l); if (!cur.range && r) cur.range = r; }
+      const hdr = isHeaderLine(l);
+      // a bold, non-bullet title line directly followed by its company/date line also opens an entry
+      const nx = lines.slice(i + 1, i + 3);
+      const titleFirst = !l.isB && !l.cont && !r && l.text.length < 80 && (l.bold || TITLE_RE.test(l.text)) && nx.some((q) => isHeaderLine(q)) && !nx.some((q) => q.isB && lines.indexOf(q) < lines.indexOf(nx.find(isHeaderLine)));
+      const starts = !cur || titleFirst || (hdr && !(cur.opener && !cur.range && cur.lines.length <= 2));
+      if (!starts && hdr && cur && !cur.range) { cur.lines.push(l); cur.range = r; return; }
+      if (starts) { cur = { lines: [l], range: hdr ? r : null, opener: titleFirst }; groups.push(cur); }
+      else { cur.lines.push(l); if (!cur.range && hdr) cur.range = r; }
     });
     return groups.map((g) => {
       const head = [], rest = [];
-      for (const l of g.lines) { if (!rest.length && head.length < 2 && !(l.bullet || BULLET_STRIP.test(l.text)) && (head.length === 0 || l.bold || findRange(l.text) || (l.text.length < 45 && !/[.;]$/.test(l.text.trim())))) head.push(l); else rest.push(l); }
-      const strip = (t) => clean(g.range ? t.replace(g.range.raw, ' ') : t).replace(/[|,–—-]\s*$/, '').replace(/^\s*[|,–—-]/, '').trim();
+      for (const l of g.lines) { if (!rest.length && head.length < 2 && !(l.isB || l.cont || l.bullet || BULLET_STRIP.test(l.text)) && (head.length === 0 || l.bold || findRange(l.text) || (l.text.length < 45 && !/[.;]$/.test(l.text.trim())))) head.push(l); else rest.push(l); }
+      const strip = (t) => tidy(g.range ? t.replace(new RegExp(g.range.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (g.range.present ? '(?:\\s+[A-Z]{1,3}\\b)?' : '')), ' ') : t);
       const h = head.map((l) => strip(l.text)).filter(Boolean);
       const dates = g.range ? { startDate: g.range.start, endDate: g.range.end } : { startDate: '', endDate: '' };
       if (isEdu) {
@@ -216,17 +251,20 @@
         if (extra.length) ent.courses = extra;
         return { ent, conf: (ent.institution && g.range ? 0.85 : 0.55) * (h.length ? 1 : 0.8) };
       }
-      let position = '', company = '';
-      if (h.length >= 2) { position = h[0]; company = h[1]; if (/\b(pvt|ltd|inc|llc|technologies|solutions|limited|corp|company|labs|university)\b/i.test(position) && !/\b(pvt|ltd|inc|llc|technologies|solutions|limited|corp)\b/i.test(company)) [position, company] = [company, position]; }
+      let position = '', company = '', location = '';
+      for (let k = 0; k < h.length; k++) { const segs = h[k].split(/\s*(?:•|·|\||\s-\s|,)\s*/).filter(Boolean); const li = segs.findIndex((x, j) => j > 0 && CITY_RE.test(x)); if (li > 0) { location = segs[li]; segs.splice(li, 1); h[k] = segs.join(' · '); } }
+      if (h.length >= 2) { position = h[0]; company = h[1]; if (TITLE_RE.test(company) && !TITLE_RE.test(position)) [position, company] = [company, position]; if (/\b(pvt|ltd|inc|llc|technologies|solutions|limited|corp|company|labs|university)\b/i.test(position) && !/\b(pvt|ltd|inc|llc|technologies|solutions|limited|corp)\b/i.test(company)) [position, company] = [company, position]; }
       else [position, company] = splitTitle(h[0] || '');
       company = company.replace(/\s{2,}.*$/, '');
-      const ent = { position, name: company, ...dates, highlights: bulletsFrom(rest) };
+      const ent = { position: tidy(position), name: tidy(company), location, ...dates, highlights: bulletsFrom(rest) };
       return { ent, conf: (position && company && g.range ? 0.85 : position && (company || g.range) ? 0.65 : 0.45) };
     });
   }
   function skillChips(lines) {
     const out = [], seen = new Set();
-    for (const l of lines) {
+    const joined = [];   // a skill list wrapped over lines: "Automation" + "Anywhere, ..." is one item
+    for (const l of lines) { const p = joined[joined.length - 1]; if (p && !/[,|•·;:]\s*$/.test(p.text) && !/^[^:]{2,30}:/.test(l.text) && !BULLET_STRIP.test(l.text) && /^[A-Za-z]/.test(l.text)) p.text += ' ' + l.text; else joined.push({ text: l.text }); }
+    for (const l of joined) {
       let t = l.text.replace(BULLET_STRIP, '');
       t = t.replace(/^[^:]{2,30}:\s*/, '');           // "Languages: Java, C" -> chips only
       for (let s of t.split(/\s*(?:,|\||•|·|;|\s{3,}|\/\/)\s*/)) {
@@ -234,6 +272,34 @@
         if (!s || s.length > 40 || seen.has(s.toLowerCase())) continue;
         seen.add(s.toLowerCase()); out.push({ name: s });
       }
+    }
+    return out;
+  }
+
+  /* ---------- scanned PDFs: tesseract.js (already bundled in vendor/tesseract), English, whole page ---------- */
+  const BASE = (document.currentScript && document.currentScript.src.replace(/js\/resume\/extract\.js.*$/, '')) || '';
+  let ocrWorker = null;
+  function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(s); }); }
+  async function ocrPages(src, n, onStatus) {
+    if (!root.Tesseract) await loadScript(BASE + 'vendor/tesseract/tesseract.min.js');
+    const simd = (() => { try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch (e) { return false; } })();
+    if (!ocrWorker) ocrWorker = await root.Tesseract.createWorker('eng', 1, { workerPath: BASE + 'vendor/tesseract/worker.min.js', workerBlobURL: false, corePath: BASE + 'vendor/tesseract/core/folio-core-' + (simd ? 'simd-' : '') + 'lstm.js', langPath: BASE + 'vendor/tesseract/lang', gzip: true, cacheMethod: 'write', logger: (m) => { if (onStatus) onStatus(m); } });
+    await ocrWorker.setParameters({ tessedit_pageseg_mode: '3', preserve_interword_spaces: '1', debug_file: '/dev/null' });
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const an = await root.PdfEngine._analyzePage(src, i), page = an.page, view = page.view, H = view[3] - view[1], S = 2.5;
+      const vp = page.getViewport({ scale: S }), cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      const res = await ocrWorker.recognize(cv, {}, { text: true, blocks: true });
+      const d = res.data, tl = d.lines || (d.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => p.lines || []));
+      let prev = null; const lines = [];
+      for (const L of tl) {
+        const text = clean(L.text); if (!text || (L.confidence != null && L.confidence < 30)) continue;
+        const size = Math.max(4, (L.bbox.y1 - L.bbox.y0) / S * 0.8), y = view[3] - L.bbox.y1 / S;
+        lines.push({ text, parts: [text], size, bold: false, caps: /[A-Z]{3}/.test(text) && !/[a-z]/.test(text), y, x: L.bbox.x0 / S, gap: prev ? prev.y - y : 99, page: i, col: 0, relY: L.bbox.y0 / S / H, bullet: BULLET_STRIP.test(text) });
+        prev = lines[lines.length - 1];
+      }
+      out.push({ lines, body: 10, page, view, colSplit: false });
     }
     return out;
   }
@@ -246,10 +312,11 @@
     if (nPages > 6) return { refusal: 'too-many-pages', message: 'This doesn’t look like a resume (more than 6 pages) — edit it as a PDF instead.' };
     const pages = [];
     for (let i = 0; i < Math.min(nPages, opts.maxPages || 6); i++) pages.push(await pageLines(src, i));
-    const all = pages.flatMap((p) => p.lines);
+    let all = pages.flatMap((p) => p.lines), ocr = false;
+    if (!all.length && opts.ocr !== false) { const op = await ocrPages(src, Math.min(nPages, 2), opts.onStatus); if (op.length) { pages.splice(0, pages.length, ...op); all = op.flatMap((p) => p.lines); ocr = true; } }
     const bodyCounts = {}; all.forEach((l) => { const k = Math.round(l.size * 2) / 2; bodyCounts[k] = (bodyCounts[k] || 0) + l.text.length; });
     const body = +Object.keys(bodyCounts).sort((a, b) => bodyCounts[b] - bodyCounts[a])[0] || 10;
-    if (!all.length) return { refusal: 'no-text', message: 'This PDF has no text layer (it may be a scan), so we can’t read it yet.' };
+    if (!all.length) return { refusal: 'no-text', message: 'We couldn’t find any text in this PDF, even with text recognition.' };
     // headings
     for (const l of all) {
       const k = headKey(l.text) || (l.parts.length > 1 ? null : null);
@@ -321,6 +388,11 @@
     }
     // anything before the first heading that isn't contact goes to "Other" (nothing is silently dropped)
     const contactish = (t) => EMAIL_RE.test(t) || PHONE_ANY.test(t) || /linkedin|github|http/i.test(t) || t === (nm && nm.text) || (r.basics.label && t.includes(r.basics.label)) || (loc && t.includes(loc[0]));
+    // a short job-title line between the contact block and the summary is the job title, not summary text
+    if (!r.basics.label) {
+      const tl = pre.find((l) => l !== nm && !contactish(l.text) && l.text.split(/\s+/).length <= 6 && !/[.:]$/.test(l.text) && /^[A-Za-z][A-Za-z &/,-]+$/.test(l.text) && (TITLE_RE.test(l.text) || l.bold));
+      if (tl) { r.basics.label = tl.text; conf['basics.label'] = 0.7; pre.splice(pre.indexOf(tl), 1); }
+    }
     const leftover = pre.filter((l) => !contactish(l.text) && l !== nm && l.text.length > 2);
     if (leftover.length) {
       const t = leftover.map((l) => l.text).join(' ');
@@ -330,6 +402,7 @@
     P.custom = other;
     P.order = usedKeys.filter((k) => M().DEFAULT_ORDER.includes(k)).concat(M().DEFAULT_ORDER.filter((k) => !usedKeys.includes(k)));
     if (!r.basics.summary) P.order = P.order.filter((k) => k !== 'summary').concat(['summary']);
+    else if (!usedKeys.includes('summary')) P.order = ['summary'].concat(P.order.filter((k) => k !== 'summary'));
     const nSections = sections.filter((s) => !s.inlineHead || s.key === 'skills').length;
     // photo
     let photo = null;
@@ -342,7 +415,8 @@
     if (photo) score += 1;
     if (hk.size >= 2 && (hk.has('work') || hk.has('education'))) score += 1;
     const isResume = score >= 6 ? 'high' : score >= 4 ? 'unsure' : 'no';
-    const result = { resume: r, photo, conf, sections: sections.map((s) => ({ key: s.key, title: s.title })), nSections, pages: nPages, score, isResume, colSplit: pages.some((p) => p.colSplit), body };
+    if (ocr) { for (const k of ['basics.name', 'basics.email', 'basics.phone', 'basics.label', 'basics.summary', 'skills']) conf[k] = 0.4; for (const k of Object.keys(conf)) conf[k] = Math.min(conf[k], 0.4); r.work.forEach((_, i) => { conf['work.' + i] = 0.4; }); r.education.forEach((_, i) => { conf['education.' + i] = 0.4; }); }
+    const result = { ocr, resume: r, photo, conf, sections: sections.map((s) => ({ key: s.key, title: s.title })), nSections, pages: nPages, score, isResume, colSplit: pages.some((p) => p.colSplit), body };
     if (nSections < 3) result.warning = 'This doesn’t look like a resume — you can still edit it as a PDF.';
     return result;
   }

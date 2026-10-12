@@ -8,6 +8,7 @@
   const TEMPLATES = {
     modern: { label: 'Modern', reg: 'Lato-Regular', bold: 'Lato-Bold', accent: [0.659, 0.353, 0.122], bar: [0.91, 0.659, 0.404], name: 22, body: 9.5, head: 9.5, m: 46, gap: 12, align: 'left', rule: 'thin' },
     classic: { label: 'Classic', reg: 'Caladea-Regular', bold: 'Caladea-Bold', accent: [0.1, 0.1, 0.1], name: 21, body: 10, head: 10.5, m: 50, gap: 12, align: 'center', rule: 'full' },
+    twocol: { label: 'Two Column', reg: 'Lato-Regular', bold: 'Lato-Bold', accent: [0.659, 0.353, 0.122], bar: [0.91, 0.659, 0.404], name: 21, body: 9.2, head: 9.2, m: 40, gap: 11, align: 'left', rule: 'thin', twoCol: true },
     compact: { label: 'Compact', reg: 'Carlito-Regular', bold: 'Carlito-Bold', accent: [0.2, 0.2, 0.2], name: 17, body: 9, head: 9.5, m: 36, gap: 8, align: 'left', rule: 'thin' },
   };
   const fontCache = {};
@@ -42,32 +43,33 @@
     const safe = (t, f) => { const set = f === FB ? cs.b : cs.r; return Array.from(String(t || '').replace(/[\u2028\n\r\t]+/g, ' ')).map((c) => set.has(c.codePointAt(0)) ? c : ({ '\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2022': '-', '\u20b9': 'Rs.' })[c] || (c.trim() ? '?' : ' ')).join(''); };
     const W = A4[0], H = A4[1], m = T.m, cw = W - 2 * m;
     const ink = L.rgb(0.13, 0.11, 0.1), soft = L.rgb(0.36, 0.31, 0.27), acc = L.rgb(...T.accent);
-    let page, y;
-    const newPage = () => { page = doc.addPage(A4); y = H - m; if (T.bar) page.drawRectangle({ x: 0, y: H - 6, width: W, height: 6, color: L.rgb(...T.bar) }); };
+    let page, y, pi = -1, CX = m, CW = cw; const pages = [];
+    const newPage = () => { page = doc.addPage(A4); pages.push(page); pi = pages.length - 1; y = H - m; if (T.bar) page.drawRectangle({ x: 0, y: H - 6, width: W, height: 6, color: L.rgb(...T.bar) }); };
     newPage();
-    const need = (h) => { if (y - h < m) newPage(); };
+    const need = (h) => { if (y - h < m) { if (pages[pi + 1]) { pi++; page = pages[pi]; y = H - m; } else newPage(); } };
     const wrap = (t, f, s, w) => {
       const words = safe(t, f).split(/\s+/).filter(Boolean), out = []; let ln = '';
       for (const wd of words) { const tt = ln ? ln + ' ' + wd : wd; if (f.widthOfTextAtSize(tt, s) <= w || !ln) ln = tt; else { out.push(ln); ln = wd; } }
       if (ln) out.push(ln); return out;
     };
     const text = (t, o) => {
-      const f = o.bold ? FB : F, s = o.size || T.body, lh = s * (o.lh || 1.32), x0 = o.x != null ? o.x : m, w = o.w || (W - m - x0);
+      const f = o.bold ? FB : F, s = o.size || T.body, lh = s * (o.lh || 1.32), x0 = o.x != null ? o.x : CX, w = o.w || (CX + CW - x0);
       for (const ln of wrap(t, f, s, w)) {
         need(lh); y -= lh;
         const tw = f.widthOfTextAtSize(ln, s);
-        const x = o.align === 'center' ? (W - tw) / 2 : o.align === 'right' ? W - m - tw : x0;
+        const x = o.align === 'center' ? CX + (CW - tw) / 2 : o.align === 'right' ? CX + CW - tw : x0;
         page.drawText(ln, { x, y: y + (lh - s) * 0.45, size: s, font: f, color: o.color || ink });
       }
     };
     const rowWithDate = (left, right, o) => {   // "Role, Company ........ 2020 – 2022" on one baseline, left text first
       const s = o.size || T.body, f = FB, rw = right ? F.widthOfTextAtSize(safe(right, F), s) : 0;
-      const lines = wrap(left, f, s, cw - rw - 12), lh = s * 1.35;
+      const narrow = CW < 300, lines = wrap(left, f, s, narrow ? CW : CW - rw - 12), lh = s * 1.35;
       lines.forEach((ln, i) => {
         need(lh); y -= lh;
-        page.drawText(ln, { x: m, y: y + (lh - s) * 0.45, size: s, font: f, color: ink });
-        if (i === 0 && right) page.drawText(safe(right, F), { x: W - m - rw, y: y + (lh - s) * 0.45, size: s, font: F, color: soft });
+        page.drawText(ln, { x: CX, y: y + (lh - s) * 0.45, size: s, font: f, color: ink });
+        if (i === 0 && right && !narrow) page.drawText(safe(right, F), { x: CX + CW - rw, y: y + (lh - s) * 0.45, size: s, font: F, color: soft });
       });
+      if (narrow && right) text(right, { color: soft, size: s - 0.5 });
     };
     // ---- header: photo, name, title, contact (all in the page body, never header/footer areas)
     const b = resume.basics;
@@ -100,15 +102,21 @@
     y -= T.gap * 0.6;
     if (T.rule === 'full' || T === TEMPLATES.modern) { page.drawLine({ start: { x: m, y }, end: { x: W - m, y }, thickness: T.rule === 'full' ? 0.9 : 0.5, color: T.rule === 'full' ? ink : L.rgb(0.92, 0.85, 0.76) }); }
     // ---- sections in the user's order
-    const heading = (name) => {
+    let curKey = null; const heading = (name) => {
+      if (curKey && !written.includes(curKey)) written.push(curKey);
       need(T.head * 3.2); y -= T.gap;
       text(name.toUpperCase(), { bold: true, size: T.head, color: acc, lh: 1.2 });
-      y -= 3; page.drawLine({ start: { x: m, y }, end: { x: W - m, y }, thickness: T.rule === 'full' ? 0.7 : 0.4, color: T.rule === 'full' ? ink : L.rgb(0.9, 0.83, 0.74) }); y -= 2;
+      y -= 3; page.drawLine({ start: { x: CX, y }, end: { x: CX + CW, y }, thickness: T.rule === 'full' ? 0.7 : 0.4, color: T.rule === 'full' ? ink : L.rgb(0.9, 0.83, 0.74) }); y -= 2;
     };
-    const bullets = (arr) => { for (const h of arr || []) if (String(h).trim()) { const s = T.body, x = m + 10; need(s * 1.32); const y0 = y; text(h, { x, size: s }); page.drawCircle({ x: m + 3.5, y: y0 - s * 1.32 + (s * 0.32) * 0.45 + s * 0.33, size: 1.3, color: ink }); } };
+    const bullets = (arr) => { for (const h of arr || []) if (String(h).trim()) { const s = T.body, x = CX + 10; need(s * 1.32); const y0 = y; text(h, { x, size: s }); page.drawCircle({ x: CX + 3.5, y: y0 - s * 1.32 + (s * 0.32) * 0.45 + s * 0.33, size: 1.3, color: ink }); } };
     const order = (P.order || root.ResumeModel.DEFAULT_ORDER);
-    const S = SNAME();
-    for (const k of order) {
+    const S = SNAME(); const written = [];
+    const SIDE = ['skills', 'education', 'languages', 'interests'];
+    const mainKeys = T.twoCol ? order.filter((k) => !SIDE.includes(k)) : order, sideKeys = T.twoCol ? order.filter((k) => SIDE.includes(k)) : [];
+    const bodyTop = y, sideX = m + cw * 0.68, sideW = cw * 0.32;
+    if (T.twoCol) { CW = cw * 0.64; page.drawRectangle({ x: sideX - 10, y: m - 10, width: W - sideX + 10 - m + 10, height: bodyTop - m + 4, color: L.rgb(1, 0.953, 0.894) }); }
+    const writeSections = (keys) => { for (const k of keys) {
+      curKey = k;
       if (k === 'summary' && b.summary) { heading(S.summary); text(b.summary, {}); }
       else if (k === 'work' && resume.work.length) {
         heading(S.work);
@@ -123,43 +131,72 @@
       } else if (k === 'awards' && resume.awards.length) { heading(S.awards); bullets(resume.awards.map((a) => [a.title, a.awarder, a.date].filter(Boolean).join(', '))); }
       else if (k === 'languages' && resume.languages.length) { heading(S.languages); text(resume.languages.map((l) => l.language + (l.fluency ? ' (' + l.fluency + ')' : '')).join('  ·  '), {}); }
       else if (k === 'interests' && resume.interests.length) { heading(S.interests); text(resume.interests.map((l) => l.name).join('  ·  '), {}); }
+    } };
+    writeSections(mainKeys);
+    curKey = null;
+    for (const c of P.custom || []) if (c.text && c.text.trim() && c.keep !== false) { heading(c.title || 'Additional Information'); written.push('custom:' + (c.title || 'Additional Information')); bullets(c.text.split('\n')); }
+    if (P.keepPersonal && P.personal && P.personal.text) { heading('Personal Details'); written.push('custom:Personal Details'); for (const ln of P.personal.text.split('\n')) text(ln, {}); }
+    if (P.keepDeclaration && P.declaration && P.declaration.text) { heading('Declaration'); written.push('custom:Declaration'); text(P.declaration.text, {}); }
+    if (T.twoCol) {   // sidebar written AFTER the main column in the content stream
+      pi = 0; page = pages[0]; y = bodyTop; CX = sideX; CW = sideW;
+      const links = [b.url, ...(b.profiles || []).map((p) => p.url)].filter(Boolean);
+      if (links.length) { heading('Links'); written.push('custom:Links'); for (const u of links) text(u, { size: T.body - 0.5 }); }
+      writeSections(sideKeys);
     }
-    for (const c of P.custom || []) if (c.text && c.text.trim() && c.keep !== false) { heading(c.title || 'Additional Information'); bullets(c.text.split('\n')); }
-    if (P.keepPersonal && P.personal && P.personal.text) { heading('Personal Details'); for (const ln of P.personal.text.split('\n')) text(ln, {}); }
-    if (P.keepDeclaration && P.declaration && P.declaration.text) { heading('Declaration'); text(P.declaration.text, {}); }
     doc.setTitle((b.name || 'Resume') + ' — Resume'); doc.setSubject('Resume'); doc.setCreator('Pdfroo'); doc.setProducer('Pdfroo (pdf-lib)'); doc.setLanguage('en');
     const bytes = await doc.save({ useObjectStreams: true });
-    return { bytes, pages: doc.getPageCount() };
+    return { bytes, pages: doc.getPageCount(), order: written.filter((k) => !k.startsWith('custom:')), written };
   }
 
   /* ---- "See what recruiters' software sees": plain text via pdf.js + 4 checks ---- */
-  async function atsCheck(bytes, resume) {
+  async function atsCheck(bytes, resume, writtenOrder) {
     const pdf = await root.pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
-    let txt = ''; const pos = [];
+    let txt = ''; const rows = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       const pg = await pdf.getPage(i), H = pg.view[3], tc = await pg.getTextContent();
-      for (const it of tc.items) { txt += it.str + (it.hasEOL ? '\n' : ''); if (it.str.trim()) pos.push({ s: it.str, y: it.transform[5], H, p: i }); }
+      for (const it of tc.items) {
+        txt += it.str + (it.hasEOL ? '\n' : '');
+        if (!it.str.trim()) continue;
+        const y = it.transform[5]; let r = rows.find((q) => q.p === i && Math.abs(q.y - y) < 2);   // join each line's pieces
+        if (!r) { r = { p: i, y, H, s: '' }; rows.push(r); } r.s += it.str;
+      }
       txt += '\n';
     }
     await pdf.destroy();
     txt = txt.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-    const b = resume.basics, low = txt.toLowerCase();
-    const S = SNAME(), order = resume.meta.pdfroo.order.filter((k) => k === 'summary' ? b.summary : (resume[k] || []).length);
-    const real = txt.replace(/\s/g, '').length > 40 && (!b.name || low.includes(b.name.toLowerCase())) && !/\ufffd/.test(txt);
+    const flat = txt.replace(/\s+/g, ' '), low = flat.toLowerCase(), nos = (t) => String(t || '').replace(/\s+/g, '').toLowerCase();
+    const b = resume.basics, S = SNAME();
+    const order = (writtenOrder || resume.meta.pdfroo.order).filter((k) => k === 'summary' ? b.summary : (resume[k] || []).length);
+    const real = flat.replace(/\s/g, '').length > 40 && (!b.name || low.includes(b.name.toLowerCase().replace(/\s+/g, ' '))) && !/\ufffd/.test(txt);
     const ci = [b.email, b.phone].filter(Boolean);
-    const contact = ci.length ? ci.every((c) => { const p = pos.find((q) => q.s.includes(c) || (c.length > 6 && q.s.includes(c.slice(0, 6)))); return p && p.p === 1 && p.y > 40 && p.y < p.H - 30; }) : false;
-    // reading order: name, then each section heading in the user's order, each role in order
-    const marks = [b.name, ...order.map((k) => S[k].toUpperCase()), ...resume.work.map((w) => w.position)].filter(Boolean);
-    let at = -1, ordered = true; const seq = [b.name, ...order.map((k) => S[k].toUpperCase())].filter(Boolean);
-    for (const mk of seq) { const i = txt.indexOf(mk.length > 3 ? mk.slice(0, 30) : mk, Math.max(0, at)); if (i < at || i < 0) { ordered = false; break; } at = i; }
-    at = -1; for (const w of resume.work) { if (!w.position) continue; const i = txt.indexOf(w.position.slice(0, 25), Math.max(0, at)); if (i < 0) { ordered = false; break; } at = i; }
-    void marks;
-    const std = order.every((k) => txt.includes(S[k].toUpperCase()));
-    return { text: txt, checks: [
+    const contact = ci.every((c) => rows.some((r) => nos(r.s).includes(nos(c)) && r.p === 1 && r.y > 40 && r.y < r.H - 30));
+    let at = -1, ordered = true;
+    const find = (t) => { const k = String(t).replace(/\s+/g, ' ').trim().slice(0, 40); const i = flat.indexOf(k, Math.max(0, at)); return i; };
+    for (const mk of [b.name, ...order.map((k) => S[k].toUpperCase())].filter(Boolean)) { const i = find(mk); if (i < 0) { ordered = false; break; } at = i; }
+    at = -1; for (const w of resume.work) { if (!w.position) continue; const i = find(w.position); if (i < 0) { ordered = false; break; } at = i; }
+    const std = order.every((k) => flat.includes(S[k].toUpperCase()));
+    // round trip: our own extractor over the generated PDF vs what was typed
+    const lost = [];
+    try {
+      const E = root.PdfEngine, res = await E.load(bytes.slice(0), 'check.pdf');
+      const o = await root.ResumeExtract.extract(res.src, bytes, { photo: false, ocr: false });
+      const g = o.resume || { basics: {}, work: [], skills: [] };
+      if (b.email && (g.basics.email || '').toLowerCase() !== b.email.toLowerCase()) lost.push('email');
+      if (b.phone && (g.basics.phone || '').replace(/\D/g, '') !== b.phone.replace(/\D/g, '')) lost.push('phone');
+      const gt = nos((g.work || []).map((w) => w.position + ' ' + w.name).join(' ') + ' ' + (g.projects || []).map((p) => p.name).join(' '));
+      for (const w of resume.work) {
+        if (w.position && !gt.includes(nos(w.position)) && !nos(flat).includes(nos(w.position))) lost.push('job title “' + w.position + '”');
+        const d = range(w.startDate, w.endDate); if (d && !nos(flat).includes(nos(d))) lost.push('dates of “' + (w.position || w.name) + '”');
+      }
+      const gs = nos((g.skills || []).map((x) => x.name).join(' ') + ' ' + flat);
+      for (const sk of resume.skills) if (sk.name && !gs.includes(nos(sk.name))) lost.push('skill “' + sk.name + '”');
+    } catch (e) { lost.push('round-trip read failed'); }
+    return { text: txt, lost, checks: [
       { id: 'text', label: 'Real text, not images', ok: real },
       { id: 'contact', label: 'Contact details in the page body', ok: contact || !ci.length, warn: !ci.length },
       { id: 'order', label: 'Reads in the right order', ok: ordered },
       { id: 'names', label: 'Standard section names', ok: std },
+      { id: 'roundtrip', label: lost.length ? 'Read back: ' + lost.slice(0, 4).join(', ') + (lost.length > 4 ? ' +' + (lost.length - 4) + ' more' : '') + ' lost' : 'Read back: email, phone, skills, jobs and dates all found', ok: !lost.length },
     ] };
   }
   root.ResumeRender = { build, atsCheck, TEMPLATES, fmtDate, range };
