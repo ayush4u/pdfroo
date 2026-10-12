@@ -364,6 +364,12 @@
     toast('Saved ' + name, 'ok');
   }
 
+  function docIcon() {   // inline SVG document icon, 16 px, stroke = currentColor
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg');
+    for (const [k, v] of Object.entries({ width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'rz-ed-ic' })) svg.setAttribute(k, v);
+    for (const d of ['M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z', 'M14 2v6h6', 'M16 13H8', 'M16 17H8', 'M10 9H8']) { const p = document.createElementNS(NS, 'path'); p.setAttribute('d', d); svg.appendChild(p); }
+    return svg;
+  }
   /* ---------- wiring ---------- */
   function init() {
     const ctas = $('.roo-ctas');
@@ -377,7 +383,7 @@
         const A = root.PdfrooApp, src = A.currentSrc && A.currentSrc(); const bytes = src != null && root.PdfEngine.getSourceBytes(src);
         if (S.detected && S.detected.d.src === src) { showCard(S.detected.out, S.detected.d); return; }
         if (bytes) fromBytes(new Uint8Array(bytes), A.docName ? A.docName() : 'resume.pdf', src);
-      } }, h('span', { 'aria-hidden': 'true' }, '📄'), h('span', { class: 'rz-ed-lbl' }, 'Rebuild as resume'), h('span', { class: 'rz-ed-short' }, 'Resume'));
+      } }, docIcon(), h('span', { class: 'rz-ed-lbl' }, 'Rebuild as resume'), h('span', { class: 'rz-ed-short' }, 'Resume'));
       acts.insertBefore(b, acts.firstChild);
     }
     document.addEventListener('pdfroo:opened', onOpened);

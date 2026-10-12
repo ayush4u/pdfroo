@@ -177,3 +177,4 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
   .rz-fields > .rz-f.half { flex-basis: 100%; }
 }
 @media (max-width: 760px) { .rz-main.rz-s-editor { padding-bottom: 180px; } }
+.rz-ed-btn .rz-ed-ic { width: 16px; height: 16px; flex: none; }
