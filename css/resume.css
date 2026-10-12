@@ -120,6 +120,15 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
 .rz-thumb canvas { width: 100%; height: auto; display: block; }
 .rz-tpl.on .rz-thumb { border-color: var(--roo); box-shadow: 0 0 0 3px rgba(232, 168, 103, .35); }
 .rz-tabs, .rz-sticky { display: none; }
+.rz-colors { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; max-width: 100%; }
+.rz-sw-lbl { font-size: 12px; font-weight: 700; color: var(--rz-ink2); }
+.rz-sw-row { display: flex; gap: 6px; flex-wrap: nowrap; }
+.rz-sw { position: relative; width: 30px; height: 30px; flex: none; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1.5px var(--rz-line); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.rz-sw.on { box-shadow: 0 0 0 2.5px var(--rz-ink); }
+.rz-sw:focus-visible, .rz-sw-custom:focus-within { outline: 3px solid var(--primary-ring, rgba(168,90,31,.35)); outline-offset: 2px; }
+.rz-sw-custom { background: conic-gradient(#e11d48, #f59e0b, #16a34a, #0ea5e9, #2563eb, #e11d48); color: #fff; font-weight: 800; font-size: 16px; overflow: hidden; }
+.rz-sw-custom input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; border: 0; padding: 0; }
+.rz-sw-note { flex-basis: 100%; text-align: center; font-size: 11.5px; color: #7c4a03; }
 
 /* recruiter check */
 .rz-atsgrid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 0.75fr); gap: 18px; align-items: start; }
@@ -155,8 +164,10 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
   .rz-form { border: 1px solid var(--rz-line); border-radius: 16px; margin: 0 12px; overflow: hidden; }
   .rz-pv { padding: 8px 12px; }
   .rz-sticky { display: flex; flex-direction: column; align-items: center; gap: 4px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; padding: 10px 12px calc(8px + env(safe-area-inset-bottom)); background: linear-gradient(180deg, rgba(255, 250, 243, 0), #fffaf3 30%); }
+  .rz-sw { width: 28px; height: 28px; } .rz-sw-row { gap: 5px; } .rz-sw-lbl { flex-basis: 100%; text-align: center; }
   .rz-sticky .rz-dl { width: 100%; min-height: 48px; border-radius: 12px; }
   .rz-sticky small { color: var(--rz-ink2); font-size: 11.5px; }
   .rz-card { top: auto; bottom: 16px; transform: translateX(-50%); }
   .rz-fields > .rz-f.half { flex-basis: 100%; }
 }
+@media (max-width: 760px) { .rz-main.rz-s-editor { padding-bottom: 180px; } }

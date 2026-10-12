@@ -12,6 +12,18 @@
     compact: { label: 'Compact', reg: 'Carlito-Regular', bold: 'Carlito-Bold', accent: [0.2, 0.2, 0.2], name: 17, body: 9, head: 9.5, m: 36, gap: 8, align: 'left', rule: 'thin' },
   };
   const fontCache = {};
+  /* accent colour: WCAG contrast vs white >= 4.5, darkened automatically when needed */
+  const hexRgb = (h) => { const m = /^#?([0-9a-f]{6})$/i.exec(h || ''); if (!m) return null; const n = parseInt(m[1], 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  const rgbHex = (c) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+  const lum = (c) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+  const contrast = (c) => 1.05 / (lum(c) + 0.05);
+  function safeAccent(hex) {
+    let c = hexRgb(hex); if (!c) return null;
+    const orig = rgbHex(c); let k = 0;
+    while (contrast(c) < 4.5 && k++ < 60) c = c.map((v) => v * 0.95);
+    return { hex: rgbHex(c), darkened: rgbHex(c) !== orig, ratio: contrast(c) };
+  }
+  const ACCENTS = [['Pdfroo orange', '#a85a1f'], ['Navy', '#1f3a68'], ['Teal', '#0f6e6e'], ['Emerald', '#1e7a4c'], ['Burgundy', '#7f1d3a'], ['Slate', '#475569'], ['Royal blue', '#2747b8'], ['Charcoal', '#333333']];
   function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(s); }); }
   async function ensureFontkit() { if (!root.fontkit) await loadScript(BASE + 'vendor/fontkit.umd.min.js'); }
   function b64(s) { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
@@ -42,9 +54,13 @@
     const cs = { r: new Set(F.getCharacterSet()), b: new Set(FB.getCharacterSet()) };
     const safe = (t, f) => { const set = f === FB ? cs.b : cs.r; return Array.from(String(t || '').replace(/[\u2028\n\r\t]+/g, ' ')).map((c) => set.has(c.codePointAt(0)) ? c : ({ '\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2022': '-', '\u20b9': 'Rs.' })[c] || (c.trim() ? '?' : ' ')).join(''); };
     const W = A4[0], H = A4[1], m = T.m, cw = W - 2 * m;
-    const ink = L.rgb(0.13, 0.11, 0.1), soft = L.rgb(0.36, 0.31, 0.27), acc = L.rgb(...T.accent);
+    const ink = L.rgb(0.2, 0.2, 0.2), soft = L.rgb(0.36, 0.36, 0.36);
+    const A = P.accent ? safeAccent(P.accent) : null, ac = A ? hexRgb(A.hex).map((v) => v / 255) : null;
+    const acc = ac ? L.rgb(...ac) : L.rgb(...T.accent), nameCol = ac ? acc : ink;
+    const tint = (f) => L.rgb(...(ac || T.accent).map((v) => 1 - (1 - v) * f));
+    const ruleCol = ac ? tint(0.35) : null;
     let page, y, pi = -1, CX = m, CW = cw; const pages = [];
-    const newPage = () => { page = doc.addPage(A4); pages.push(page); pi = pages.length - 1; y = H - m; if (T.bar) page.drawRectangle({ x: 0, y: H - 6, width: W, height: 6, color: L.rgb(...T.bar) }); };
+    const newPage = () => { page = doc.addPage(A4); pages.push(page); pi = pages.length - 1; y = H - m; if (T.bar) page.drawRectangle({ x: 0, y: H - 6, width: W, height: 6, color: ac ? acc : L.rgb(...T.bar) }); };
     newPage();
     const need = (h) => { if (y - h < m) { if (pages[pi + 1]) { pi++; page = pages[pi]; y = H - m; } else newPage(); } };
     const wrap = (t, f, s, w) => {
@@ -93,20 +109,20 @@
     }
     const halign = photo ? 'left' : T.align;
     y -= 4;
-    text(b.name || 'Your Name', { bold: true, size: T.name, x: hx, align: halign, lh: 1.15 });
-    if (b.label) text(b.label, { bold: T === TEMPLATES.modern, size: T.body + 1, x: hx, align: halign, color: T === TEMPLATES.modern ? acc : soft });
+    text(b.name || 'Your Name', { bold: true, size: T.name, x: hx, align: halign, lh: 1.15, color: nameCol });
+    if (b.label) text(b.label, { bold: T === TEMPLATES.modern, size: T.body + 1, x: hx, align: halign, color: T === TEMPLATES.modern && !ac ? acc : soft });
     const loc = [b.location && b.location.city, b.location && b.location.region].filter(Boolean).join(', ');
     const contact = [loc, b.email, b.phone, b.url, ...(b.profiles || []).map((p) => p.url)].filter(Boolean).join('  ·  ');
     if (contact) text(contact, { size: T.body - 0.5, x: hx, align: halign, color: soft });
     if (photo) y = Math.min(y, topY - ps - 8);
     y -= T.gap * 0.6;
-    if (T.rule === 'full' || T === TEMPLATES.modern) { page.drawLine({ start: { x: m, y }, end: { x: W - m, y }, thickness: T.rule === 'full' ? 0.9 : 0.5, color: T.rule === 'full' ? ink : L.rgb(0.92, 0.85, 0.76) }); }
+    if (T.rule === 'full' || T === TEMPLATES.modern) { page.drawLine({ start: { x: m, y }, end: { x: W - m, y }, thickness: T.rule === 'full' ? 0.9 : 0.5, color: ac ? (T.rule === 'full' ? acc : ruleCol) : T.rule === 'full' ? ink : L.rgb(0.92, 0.85, 0.76) }); }
     // ---- sections in the user's order
     let curKey = null; const heading = (name) => {
       if (curKey && !written.includes(curKey)) written.push(curKey);
       need(T.head * 3.2); y -= T.gap;
       text(name.toUpperCase(), { bold: true, size: T.head, color: acc, lh: 1.2 });
-      y -= 3; page.drawLine({ start: { x: CX, y }, end: { x: CX + CW, y }, thickness: T.rule === 'full' ? 0.7 : 0.4, color: T.rule === 'full' ? ink : L.rgb(0.9, 0.83, 0.74) }); y -= 2;
+      y -= 3; page.drawLine({ start: { x: CX, y }, end: { x: CX + CW, y }, thickness: T.rule === 'full' ? 0.7 : 0.4, color: ac ? (T.rule === 'full' ? acc : ruleCol) : T.rule === 'full' ? ink : L.rgb(0.9, 0.83, 0.74) }); y -= 2;
     };
     const bullets = (arr) => { for (const h of arr || []) if (String(h).trim()) { const s = T.body, x = CX + 10; need(s * 1.32); const y0 = y; text(h, { x, size: s }); page.drawCircle({ x: CX + 3.5, y: y0 - s * 1.32 + (s * 0.32) * 0.45 + s * 0.33, size: 1.3, color: ink }); } };
     const order = (P.order || root.ResumeModel.DEFAULT_ORDER);
@@ -114,7 +130,7 @@
     const SIDE = ['skills', 'education', 'languages', 'interests'];
     const mainKeys = T.twoCol ? order.filter((k) => !SIDE.includes(k)) : order, sideKeys = T.twoCol ? order.filter((k) => SIDE.includes(k)) : [];
     const bodyTop = y, sideX = m + cw * 0.68, sideW = cw * 0.32;
-    if (T.twoCol) { CW = cw * 0.64; page.drawRectangle({ x: sideX - 10, y: m - 10, width: W - sideX + 10 - m + 10, height: bodyTop - m + 4, color: L.rgb(1, 0.953, 0.894) }); }
+    if (T.twoCol) { CW = cw * 0.64; page.drawRectangle({ x: sideX - 10, y: m - 10, width: W - sideX + 10 - m + 10, height: bodyTop - m + 4, color: ac ? tint(0.08) : L.rgb(1, 0.953, 0.894) }); }
     const writeSections = (keys) => { for (const k of keys) {
       curKey = k;
       if (k === 'summary' && b.summary) { heading(S.summary); text(b.summary, {}); }
@@ -199,5 +215,5 @@
       { id: 'roundtrip', label: lost.length ? 'Read back: ' + lost.slice(0, 4).join(', ') + (lost.length > 4 ? ' +' + (lost.length - 4) + ' more' : '') + ' lost' : 'Read back: email, phone, skills, jobs and dates all found', ok: !lost.length },
     ] };
   }
-  root.ResumeRender = { build, atsCheck, TEMPLATES, fmtDate, range };
+  root.ResumeRender = { safeAccent, ACCENTS, build, atsCheck, TEMPLATES, fmtDate, range };
 })(window);

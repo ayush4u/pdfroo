@@ -213,7 +213,8 @@
     const pvP = h('section', { class: 'rz-pv', 'aria-label': 'Preview' },
       h('div', { class: 'rz-pv-top' }, h('span', { class: 'rz-chip' }, 'Live preview · A4'), h('button', { type: 'button', class: 'rz-btn rz-dl hide-phone', onclick: atsScreen }, '⬇ Download PDF, free')),
       h('div', { class: 'rz-preview', id: 'rzPreview' }),
-      h('div', { class: 'rz-strip', id: 'rzStrip', role: 'radiogroup', 'aria-label': 'Template' }));
+      h('div', { class: 'rz-strip', id: 'rzStrip', role: 'radiogroup', 'aria-label': 'Template' }),
+      h('div', { class: 'rz-colors', id: 'rzColors' }));
     const tabs = h('div', { class: 'rz-tabs', role: 'tablist' },
       ['form', 'preview'].map((t) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(S.tab === t), class: S.tab === t ? 'on' : '', onclick: () => { S.tab = t; grid.dataset.tab = t; tabs.querySelectorAll('button').forEach((b, i) => { const on = ['form', 'preview'][i] === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); }); window.scrollTo(0, 0); } }, t === 'form' ? 'Form' : 'Preview')));
     const grid = h('div', { class: 'rz-ed', 'data-tab': S.tab }, formP, pvP);
@@ -221,6 +222,7 @@
     main.append(tabs, grid, sticky);
     renderForm();
     renderStrip();
+    renderColors();
     preview();
   }
   function card(title, key, body, ctl) {
@@ -306,6 +308,19 @@
       h('option', { value: '' }, '+ Add a section…'), hidden.map((k) => h('option', { value: k }, M.SECTION_NAMES[k])), h('option', { value: 'custom' }, 'Custom section'));
     f.appendChild(h('div', { class: 'rz-sec rz-addsec' }, sel));
     const ds = [...f.querySelectorAll('details')]; openKeys.forEach((i) => { if (ds[i]) ds[i].open = true; });
+  }
+  let stripTimer = null;
+  function renderColors() {
+    const box = $('#rzColors'); if (!box) return; const P = S.R.meta.pdfroo; box.innerHTML = '';
+    const cur = (P.accent || '').toLowerCase();
+    const set = (hex) => { P.accent = hex; schedule(); renderColors(); clearTimeout(stripTimer); stripTimer = setTimeout(renderStrip, 400); };
+    const row = h('div', { class: 'rz-sw-row', role: 'radiogroup', 'aria-label': 'Accent colour' },
+      RR.ACCENTS.map(([n, hex]) => { const on = cur === hex || (!cur && hex === '#a85a1f'); return h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), 'aria-label': n, title: n, class: 'rz-sw' + (on ? ' on' : ''), style: 'background:' + hex, onclick: () => set(hex) }); }),
+      h('label', { class: 'rz-sw rz-sw-custom' + (cur && !RR.ACCENTS.some((x) => x[1] === cur) ? ' on' : ''), title: 'Custom colour' }, h('span', { 'aria-hidden': 'true' }, '+'),
+        h('input', { type: 'color', 'aria-label': 'Custom accent colour', value: cur || '#a85a1f', onchange: (e) => set(e.target.value.toLowerCase()) })));
+    const A = cur ? RR.safeAccent(cur) : null;
+    box.append(h('span', { class: 'rz-sw-lbl' }, 'Accent'), row);
+    if (A && A.darkened) box.append(h('small', { class: 'rz-sw-note', role: 'status' }, 'Darkened to ' + A.hex + ' so text stays readable (4.5:1).'));
   }
   async function renderStrip() {
     const st = $('#rzStrip'); if (!st) return; st.innerHTML = '';
