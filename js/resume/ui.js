@@ -110,7 +110,7 @@
     // non-blocking: nothing covers the page; the top-bar button turns into a "Looks like a resume" pill that opens the card
     const b = $('#rzEdBtn'); if (!b) return;
     S.detected = { out, d };
-    b.classList.add('rz-hint'); b.querySelector('.rz-ed-lbl').textContent = 'Looks like a resume · Rebuild?';
+    b.classList.add('rz-hint'); b.title = 'This looks like a resume — rebuild it in a clean template';
   }
   function showCard(out, d) {
     const old = $('#rzCard'); if (old) old.remove();
@@ -377,7 +377,7 @@
         const A = root.PdfrooApp, src = A.currentSrc && A.currentSrc(); const bytes = src != null && root.PdfEngine.getSourceBytes(src);
         if (S.detected && S.detected.d.src === src) { showCard(S.detected.out, S.detected.d); return; }
         if (bytes) fromBytes(new Uint8Array(bytes), A.docName ? A.docName() : 'resume.pdf', src);
-      } }, h('span', { 'aria-hidden': 'true' }, '📄'), h('span', { class: 'hide-phone rz-ed-lbl' }, 'Rebuild as resume'));
+      } }, h('span', { 'aria-hidden': 'true' }, '📄'), h('span', { class: 'rz-ed-lbl' }, 'Rebuild as resume'), h('span', { class: 'rz-ed-short' }, 'Resume'));
       acts.insertBefore(b, acts.firstChild);
     }
     document.addEventListener('pdfroo:opened', onOpened);

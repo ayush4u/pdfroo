@@ -143,11 +143,17 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
 .rz-warn { font-size: 13px; color: #7c4a03; background: var(--rz-amb-soft); border-radius: 10px; padding: 8px 10px; }
 
 /* editor top bar entry */
-.rz-ed-btn { width: auto; padding: 0 10px; gap: 6px; font-weight: 600; font-size: 13px; position: relative; }
-.rz-ed-btn.rz-hint { background: var(--primary-soft, #fff3e4); color: var(--roo-800, #8a4712); border: 1.5px solid var(--roo); border-radius: 999px; animation: rz-pulse 1.6s ease-out 2; }
-.rz-ed-btn.rz-hint::after { content: ""; position: absolute; right: 2px; top: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--roo-700, #a85a1f); }
-@keyframes rz-pulse { 0% { box-shadow: 0 0 0 0 rgba(232, 168, 103, .7); } 100% { box-shadow: 0 0 0 10px rgba(232, 168, 103, 0); } }
+#rzEdBtn.rz-ed-btn { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; width: auto; height: 34px; min-height: 34px; padding: 0 14px; white-space: nowrap; flex: none;
+  background: transparent; color: #8a4712; border: 1px solid #c98e57; border-radius: 10px; font: 600 13px/1 var(--font); transition: background var(--t, .18s), border-color var(--t, .18s); }
+#rzEdBtn.rz-ed-btn:hover { background: rgba(232, 168, 103, .1); border-color: #a85a1f; }
+[data-theme="dark"] #rzEdBtn.rz-ed-btn { background: transparent; color: #f0bd85; border-color: rgba(232, 168, 103, .55); }
+[data-theme="dark"] #rzEdBtn.rz-ed-btn:hover { background: rgba(232, 168, 103, .1); }
+.rz-ed-btn .rz-ed-short { display: none; }
+.rz-ed-btn.rz-hint { animation: rz-pulse 1.4s ease-out 1; }
+@keyframes rz-pulse { 0% { box-shadow: 0 0 0 0 rgba(232, 168, 103, .65); } 100% { box-shadow: 0 0 0 9px rgba(232, 168, 103, 0); } }
 @media (prefers-reduced-motion: reduce) { .rz-ed-btn.rz-hint { animation: none; } }
+@media (max-width: 760px) { #rzEdBtn.rz-ed-btn { padding: 0 10px; gap: 4px; } .rz-ed-btn .rz-ed-lbl { display: none; } .rz-ed-btn .rz-ed-short { display: inline; } }
+@media (max-width: 400px) { .rz-ed-btn .rz-ed-short { display: none; } #rzEdBtn.rz-ed-btn { padding: 0 9px; } }
 
 @media (max-width: 760px) {
   .rz-ticks { display: none; }
