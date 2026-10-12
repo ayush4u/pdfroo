@@ -27,7 +27,7 @@
     },
     lastSignature: null,
   };
-  const PALETTE = ['#111827', '#e11d48', '#2563eb', '#16a34a', '#f59e0b', '#7c3aed'];
+  const PALETTE = ['#111827', '#e11d48', '#2563eb', '#16a34a', '#f59e0b', '#c98e57'];
   const HL_PALETTE = ['#facc15', '#4ade80', '#f472b6', '#60a5fa', '#fb923c'];
   const SIG_COLORS = ['#111827', '#1e3a8a', '#2563eb'];
 
@@ -94,7 +94,7 @@
   function setTheme(t) {
     document.documentElement.setAttribute('data-theme', t);
     try { localStorage.setItem('folio-theme', t); } catch (e) { /* private mode */ }
-    const m = $('meta[name="theme-color"]'); if (m) m.content = t === 'dark' ? '#0b0d16' : '#5b50f0';
+    const m = $('meta[name="theme-color"]'); if (m) m.content = t === 'dark' ? '#0b0d16' : '#a85a1f';
   }
   $$('.theme-toggle').forEach((b) => b.addEventListener('click', () => {
     setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
@@ -1652,7 +1652,7 @@
   /** Content that doesn't fit carries on: say where, and show the page it lands on with the incoming block outlined. */
   function renderFlowMini(f, p, box, line) {
     const fi = p.flowInfo;
-    line('add-flow', `Doesn’t fit on this page: ${fi.text}. Purple outline = what moves on; one Undo puts everything back.`);
+    line('add-flow', `Doesn’t fit on this page: ${fi.text}. Orange outline = what moves on; one Undo puts everything back.`);
     const pages = E.flowPreviewPages(doc, p);
     const tgt = pages.find((x) => x.index === fi.toPage) || pages[0];
     if (!tgt) return;
@@ -1686,7 +1686,7 @@
     });
     pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: b.h + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
     if (p.ok && p.flowInfo && p.flowInfo.out.length) {
-      // what carries on to the next page / column: outlined in purple with a "→ page N" tag
+      // what carries on to the next page / column: outlined in orange with a "→ page N" tag
       const fo = p.flowInfo.out;
       fo.forEach((b) => svg('rect', { class: 'rf-flowout', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: Math.max(b.h, 1 / z) + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
       const top = fo.reduce((a, b) => (b.y < a.y ? b : a), fo[0]);
@@ -1729,7 +1729,7 @@
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
   }
   // phone: the bottom sheet covers the bottom of the page, which is exactly where overflow happens. Give the page
-  // room to scroll above the sheet and bring the purple "→ page N" outline into view once per preview.
+  // room to scroll above the sheet and bring the orange "→ page N" outline into view once per preview.
   function revealFlowOnPhone(f) {
     if (ui.addFlow !== f || !f.panel) return;
     const fi = f.plan && f.plan.ok && f.plan.flowInfo;
