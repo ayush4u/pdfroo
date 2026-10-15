@@ -211,14 +211,14 @@
     const main = show('editor'); const R = S.R, P = R.meta.pdfroo;
     const formP = h('section', { class: 'rz-form', id: 'rzForm', 'aria-label': 'Form' });
     const pvP = h('section', { class: 'rz-pv', 'aria-label': 'Preview' },
-      h('div', { class: 'rz-pv-top' }, h('span', { class: 'rz-chip' }, 'Live preview · A4'), h('button', { type: 'button', class: 'rz-btn rz-dl hide-phone', onclick: atsScreen }, '⬇ Download PDF, free')),
+      h('div', { class: 'rz-pv-top' }, h('span', { class: 'rz-chip' }, 'Live preview · A4'), h('div', { class: 'rz-pv-acts' }, h('button', { type: 'button', class: 'rz-btn rz-ghost rz-atsw-btn', id: 'rzAtsBtn', onclick: () => atswScreen() }, 'ATS check'), h('button', { type: 'button', class: 'rz-btn rz-dl hide-phone', onclick: atsScreen }, '⬇ Download PDF, free'))),
       h('div', { class: 'rz-preview', id: 'rzPreview' }),
       h('div', { class: 'rz-strip', id: 'rzStrip', role: 'radiogroup', 'aria-label': 'Template' }),
       h('div', { class: 'rz-colors', id: 'rzColors' }));
     const tabs = h('div', { class: 'rz-tabs', role: 'tablist' },
       ['form', 'preview'].map((t) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(S.tab === t), class: S.tab === t ? 'on' : '', onclick: () => { S.tab = t; grid.dataset.tab = t; tabs.querySelectorAll('button').forEach((b, i) => { const on = ['form', 'preview'][i] === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); }); window.scrollTo(0, 0); } }, t === 'form' ? 'Form' : 'Preview')));
     const grid = h('div', { class: 'rz-ed', 'data-tab': S.tab }, formP, pvP);
-    const sticky = h('div', { class: 'rz-sticky' }, h('button', { type: 'button', class: 'rz-btn rz-dl', id: 'rzDownload', onclick: atsScreen }, '⬇ Download PDF, free'), h('small', null, 'No sign-up · no watermark · stays on your device'));
+    const sticky = h('div', { class: 'rz-sticky' }, h('button', { type: 'button', class: 'rz-btn rz-ghost rz-atsw-btn', onclick: () => atswScreen() }, 'ATS check'), h('button', { type: 'button', class: 'rz-btn rz-dl', id: 'rzDownload', onclick: atsScreen }, '⬇ Download PDF, free'), h('small', null, 'No sign-up · no watermark · stays on your device'));
     main.append(tabs, grid, sticky);
     renderForm();
     renderStrip();
@@ -327,7 +327,7 @@
     for (const id of Object.keys(RR.TEMPLATES)) {
       const on = S.R.meta.pdfroo.template === id;
       const b = h('button', { type: 'button', role: 'radio', 'aria-checked': String(on), class: 'rz-tpl' + (on ? ' on' : ''), 'data-tpl': id, onclick: () => { S.R.meta.pdfroo.template = id; st.querySelectorAll('.rz-tpl').forEach((x) => { const o = x.dataset.tpl === id; x.classList.toggle('on', o); x.setAttribute('aria-checked', String(o)); }); schedule(); } },
-        h('div', { class: 'rz-thumb' }), h('span', null, RR.TEMPLATES[id].label));
+        h('div', { class: 'rz-thumb' }), h('span', null, RR.TEMPLATES[id].label), RR.TEMPLATES[id].ats === false ? h('em', { class: 'rz-tpl-ats bad', title: RR.TEMPLATES[id].atsNote }, 'Not ATS-safe') : h('em', { class: 'rz-tpl-ats' }, 'ATS-safe'));
       st.appendChild(b);
       RR.build(S.R, { template: id, photo: S.photo }).then((o) => renderPdfInto(o.bytes, b.firstChild, 1, 0.35)).catch(() => {});
     }
@@ -355,6 +355,43 @@
           h('button', { type: 'button', class: 'rz-link rz-back', onclick: editorScreen }, '← Back to editing'))),
       h('p', { class: 'rz-fine' }, 'Free · no sign-up · no watermark · stays on your device')));
     renderPdfInto(out.bytes, pv, 1, 1.2).catch(() => {});
+  }
+
+  /* ---------- ATS check (Workday-style parsing), all on this device ---------- */
+  async function atswScreen(which, jd) {
+    const A = root.PdfrooApp, AT = root.ResumeATS; which = which || 'built'; if (jd == null) jd = S.jd || ''; S.jd = jd;
+    A && A.busy(true, 'Reading it like an ATS…');
+    let bytes, r, tpl = RR.TEMPLATES[S.R.meta.pdfroo.template] || RR.TEMPLATES.modern;
+    try { bytes = which === 'orig' && S.srcBytes ? S.srcBytes : (await RR.build(S.R, { photo: S.photo })).bytes; r = AT.analyze(await AT.read(root.pdfjsLib, bytes), { jd }); }
+    catch (e) { toast('Could not read the PDF: ' + e.message, 'error'); return; }
+    finally { A && A.busy(false); }
+    const main = show('atsw'), lv = { high: 'High', med: 'Medium', low: 'Low' };
+    const seg = (id, label) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(which === id), class: 'rz-seg' + (which === id ? ' on' : ''), onclick: () => atswScreen(id, S.jd) }, label);
+    const ta = h('textarea', { class: 'rz-in rz-jd', id: 'rzJd', rows: '5', placeholder: 'Paste a job description to match its keywords (stays on your device). Leave empty to use the default list.', 'aria-label': 'Job description' });
+    ta.value = jd;
+    const band = r.score >= 75 ? 'good' : r.score >= 50 ? 'ok' : 'low';
+    main.append(h('div', { class: 'rz-wrap rz-atsw' },
+      h('span', { class: 'rz-chip' }, 'ATS check · Workday-style'), h('h1', null, 'How an ATS parser reads your resume'),
+      h('p', { class: 'rz-sub' }, 'Checked on your device — nothing is uploaded.'),
+      h('div', { class: 'rz-atsw-bar' },
+        h('div', { class: 'rz-segs', role: 'radiogroup', 'aria-label': 'Which PDF' }, seg('built', 'Rebuilt PDF · ' + tpl.label), S.srcBytes ? seg('orig', 'Original PDF') : null),
+        which === 'built' ? h('span', { class: 'rz-tpl-ats big' + (tpl.ats === false ? ' bad' : ''), title: tpl.atsNote || '' }, tpl.ats === false ? 'Not ATS-safe template' : 'ATS-safe template') : null),
+      which === 'built' && tpl.ats === false ? h('p', { class: 'rz-warn' }, tpl.atsNote) : null,
+      h('div', { class: 'rz-atsw-grid' },
+        h('section', { class: 'rz-panel rz-atsw-score', 'aria-label': 'Score' },
+          h('div', { class: 'rz-score ' + band }, h('b', null, String(r.score)), h('small', null, '/100')),
+          h('p', { class: 'rz-explain' }, r.explain),
+          h('h3', null, 'Keywords (' + r.keywords.source + ')'),
+          h('div', { class: 'rz-kw' }, r.keywords.found.map((k) => h('span', { class: 'rz-kwc ok' }, '✓ ' + k)), r.keywords.missing.map((k) => h('span', { class: 'rz-kwc miss' }, '✗ ' + k))),
+          ta, h('button', { type: 'button', class: 'rz-btn rz-strong', id: 'rzJdGo', onclick: () => atswScreen(which, ta.value) }, 'Match keywords')),
+        h('section', { class: 'rz-panel rz-atsw-risks', 'aria-label': 'Parser risks' },
+          h('h3', null, r.risks.length ? r.risks.length + ' parser risk' + (r.risks.length > 1 ? 's' : '') : 'No parser risks found'),
+          h('ul', null, r.risks.map((k) => h('li', { class: 'rz-risk ' + k.level }, h('span', { class: 'rz-lv' }, lv[k.level]), h('div', null, h('b', null, k.label), h('p', null, k.detail), k.examples.length ? h('ul', { class: 'rz-ex' }, k.examples.map((e) => h('li', null, e.slice(0, 140)))) : null))))),
+        h('section', { class: 'rz-panel rz-atsw-text', 'aria-label': 'Parser text' },
+          h('h3', null, 'Plain text, in the order a parser reads it'),
+          h('pre', { class: 'rz-text', tabindex: '0' }, r.text))),
+      h('div', { class: 'rz-atsw-foot' }, h('button', { type: 'button', class: 'rz-btn rz-ghost', onclick: editorScreen }, '← Back to editing'), h('button', { type: 'button', class: 'rz-btn rz-dl', onclick: atsScreen }, '⬇ Download PDF, free'))));
+    return r;
   }
   function saveFile(bytes) {
     const name = ((S.R.basics.name || 'My').trim().replace(/[^\w\u0900-\u0D7F]+/g, '_') || 'My') + '_Resume.pdf';
@@ -389,6 +426,6 @@
     document.addEventListener('pdfroo:opened', onOpened);
     addEventListener('popstate', () => { if (S.screen) closeView(); });
   }
-  root.ResumeUI = { openChooser, fromBytes, startBlank, checkScreen, editorScreen, atsScreen, state: S, showCard };
+  root.ResumeUI = { openChooser, fromBytes, startBlank, checkScreen, editorScreen, atsScreen, atswScreen, state: S, showCard };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })(window);

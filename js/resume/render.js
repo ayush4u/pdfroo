@@ -8,7 +8,7 @@
   const TEMPLATES = {
     modern: { label: 'Modern', reg: 'Lato-Regular', bold: 'Lato-Bold', accent: [0.659, 0.353, 0.122], bar: [0.91, 0.659, 0.404], name: 22, body: 9.5, head: 9.5, m: 46, gap: 12, align: 'left', rule: 'thin' },
     classic: { label: 'Classic', reg: 'Caladea-Regular', bold: 'Caladea-Bold', accent: [0.1, 0.1, 0.1], name: 21, body: 10, head: 10.5, m: 50, gap: 12, align: 'center', rule: 'full' },
-    twocol: { label: 'Two Column', reg: 'Lato-Regular', bold: 'Lato-Bold', accent: [0.659, 0.353, 0.122], bar: [0.91, 0.659, 0.404], name: 21, body: 9.2, head: 9.2, m: 40, gap: 11, align: 'left', rule: 'thin', twoCol: true },
+    twocol: { label: 'Two Column', reg: 'Lato-Regular', bold: 'Lato-Bold', accent: [0.659, 0.353, 0.122], bar: [0.91, 0.659, 0.404], name: 21, body: 9.2, head: 9.2, m: 40, gap: 11, align: 'left', rule: 'thin', twoCol: true, ats: false, atsNote: 'Not ATS-safe: Workday-style parsers read straight across both columns and mix them up. Use Modern, Classic or Compact to apply.' },
     compact: { label: 'Compact', reg: 'Carlito-Regular', bold: 'Carlito-Bold', accent: [0.2, 0.2, 0.2], name: 17, body: 9, head: 9.5, m: 36, gap: 8, align: 'left', rule: 'thin' },
   };
   const fontCache = {};

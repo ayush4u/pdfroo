@@ -178,3 +178,45 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
 }
 @media (max-width: 760px) { .rz-main.rz-s-editor { padding-bottom: 180px; } }
 .rz-ed-btn .rz-ed-ic { width: 16px; height: 16px; flex: none; }
+
+/* ---- ATS check (Workday-style) ---- */
+.rz-ghost { background: var(--rz-cream2); }
+.rz-pv-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.rz-tpl-ats { font-style: normal; font-size: 10.5px; font-weight: 700; color: var(--rz-green); }
+.rz-tpl-ats.bad { color: #9a3412; }
+.rz-tpl-ats.big { display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border-radius: 999px; background: #d1fae5; font-size: 13px; }
+.rz-tpl-ats.big.bad { background: #ffedd5; }
+.rz-atsw { max-width: 1240px; }
+.rz-atsw *, .rz-atsw *::before { box-sizing: border-box; min-width: 0; }
+.rz-atsw-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 14px; }
+.rz-segs { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 1.5px solid var(--rz-line); border-radius: 14px; background: #fff; }
+.rz-seg { min-height: 44px; padding: 0 14px; border: 0; border-radius: 10px; background: none; font: inherit; font-size: 14px; font-weight: 700; color: var(--rz-ink2); cursor: pointer; }
+.rz-seg.on { background: var(--roo, #e8a867); color: #2f2219; }
+.rz-seg:focus-visible { outline: 3px solid rgba(168, 90, 31, .35); outline-offset: 2px; }
+.rz-atsw-grid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.rz-atsw h3 { margin: 0 0 10px; font-size: 16px; font-weight: 700; color: var(--rz-ink); }
+.rz-score { display: flex; align-items: baseline; justify-content: center; gap: 2px; width: 120px; height: 120px; margin: 0 auto 10px; border-radius: 50%; border: 10px solid #a85a1f; padding-top: 22px; }
+.rz-score b { font-size: 40px; line-height: 1; color: var(--rz-ink); } .rz-score small { color: var(--rz-ink2); font-weight: 700; }
+.rz-score.ok { border-color: var(--rz-amber); } .rz-score.good { border-color: var(--rz-green); } .rz-score.low { border-color: #c2410c; }
+.rz-explain { font-size: 13px; color: var(--rz-ink2); line-height: 1.45; margin: 0 0 14px; }
+.rz-kw { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.rz-kwc { padding: 4px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 700; }
+.rz-kwc.ok { background: #d1fae5; color: #065f46; } .rz-kwc.miss { background: #ffedd5; color: #9a3412; }
+.rz-jd { width: 100%; min-height: 96px; margin-bottom: 10px; resize: vertical; font: inherit; font-size: 14px; padding: 10px 12px; border: 1.5px solid var(--rz-line); border-radius: 12px; }
+.rz-atsw-score .rz-btn { width: 100%; }
+.rz-atsw-risks > ul { list-style: none; margin: 0; padding: 0; }
+.rz-risk { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--rz-line); }
+.rz-risk b { font-size: 14px; } .rz-risk p { margin: 3px 0 0; font-size: 13px; color: var(--rz-ink2); line-height: 1.4; }
+.rz-lv { flex: none; align-self: flex-start; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 800; text-transform: uppercase; background: var(--rz-amb-soft); color: #7c4a03; }
+.rz-risk.high .rz-lv { background: #fee2e2; color: #991b1b; } .rz-risk.low .rz-lv { background: #f1f5f9; color: #475569; }
+.rz-ex { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: var(--rz-ink2); overflow-wrap: anywhere; }
+.rz-atsw-text pre { margin: 0; max-height: 640px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--rz-cream2); border-radius: 10px; padding: 12px; }
+.rz-atsw-foot { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; margin-top: 16px; }
+@media (max-width: 1100px) { .rz-atsw-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .rz-atsw-text { grid-column: 1 / -1; } }
+@media (max-width: 760px) {
+  .rz-atsw-grid { grid-template-columns: minmax(0, 1fr); }
+  .rz-segs, .rz-seg { width: 100%; } .rz-atsw-foot .rz-btn { flex: 1 1 100%; }
+  .rz-kwc { min-height: 32px; display: inline-flex; align-items: center; }
+  .rz-atsw-text pre { max-height: 420px; }
+  .rz-sticky .rz-atsw-btn { width: 100%; min-height: 44px; }
+}
