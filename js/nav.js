@@ -27,6 +27,9 @@
     if (skip) { skip--; return; }
     reuse = false;
     const depth = (e.state && e.state.pdfrooDepth) || 0;
+    // Forward onto an entry whose screen is already closed: step straight back without reopening, so no dead entry
+    // is left that would cost an extra Back press (only our own pdfroo entries; the editor entry is app.js's business)
+    if (depth > stack.length) { try { skip++; history.go(stack.length - depth); } catch (er) { skip--; } return; }
     while (stack.length > depth) { const s = stack.pop(); try { s.close(); } catch (er) { console.error(er); } }
   });
   root.PdfrooNav = { open, done };
