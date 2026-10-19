@@ -272,7 +272,7 @@
       h('input', { class: 'rz-in', type: 'url', value: p.url || '', placeholder: 'linkedin.com/in/you', 'aria-label': 'Link ' + (i + 1), oninput: (e) => { p.url = e.target.value; p.network = net(p.url); schedule(); } }),
       h('button', { type: 'button', class: 'rz-link', 'aria-label': 'Remove link ' + (i + 1), onclick: () => { b.profiles.splice(i, 1); schedule(); renderForm(); } }, '×')));
     return h('div', { class: 'rz-f' }, h('label', null, 'LinkedIn, GitHub & other links'), ...rows,
-      h('button', { type: 'button', class: 'rz-link', onclick: () => { b.profiles.push({ network: '', url: '' }); renderForm(); } }, '+ Add link'));
+      h('button', { type: 'button', class: 'rz-link rz-addlink', onclick: () => { b.profiles.push({ network: '', url: '' }); renderForm(); } }, '+ Add link'));
   }
   function secCtl(key) {
     const P = S.R.meta.pdfroo, i = P.order.indexOf(key);
