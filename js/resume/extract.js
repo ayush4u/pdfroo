@@ -21,7 +21,17 @@
   const HEADNS = new Map(); for (const [w, k] of HEAD) if (!HEADNS.has(w.replace(/ /g, ''))) HEADNS.set(w.replace(/ /g, ''), k);   // letter-spaced headings
   const MON = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
   const D1 = `(?:${MON}\\s*,?\\s*'?\\d{2,4}|\\d{1,2}[/.]\\d{2,4}|(?:19|20)\\d{2})`;
-  const RANGE_RE = new RegExp(`(${D1})\\s*(?:-|‐|‑|−|–|—|to|till|until)\\s*(${D1}|present|current|till date|now|ongoing|today|\\d{2}\\b)`, 'i');
+  // Indic date words ("2021 – वर्तमान"). Broken text layers drop the virama/repha, vowel signs or split words with spaces
+  // ("वत मान", "वतमान", "वरतमान"), so words are compared on a skeleton: NFC, vowel signs / virama / nukta / anusvara / ZWJ / spaces
+  // removed; a reference word's repha or half-ra (र्) may also be missing. Same Devanagari block as PdfEngine.hasIndic/indicMalformed.
+  const DEV_MARKS = /[\u0900-\u0903\u093A-\u094F\u0951-\u0957\u0962\u0963\u200B-\u200D\s]/g;
+  const devSkel = (t) => String(t || '').normalize('NFC').replace(DEV_MARKS, '');
+  const NOW_SKELS = new Set(['वर्तमान', 'वर्तमान तक', 'अब तक', 'आज तक', 'अभी तक', 'अद्यतन', 'जारी'].flatMap((w) => [devSkel(w), devSkel(w.replace(/र्(?=[\u0915-\u0939])/g, ''))]));
+  /** the leading words of `t` that read as a "present" word ("वत मान 2024" -> "वत मान"), or null */
+  const devNow = (t) => { const ws = String(t || '').trim().split(/\s+/); for (let n = Math.min(ws.length, 4); n >= 1; n--) { const w = ws.slice(0, n).join(' '); if (/^[\u0900-\u097F\u200C\u200D ]+$/.test(w) && NOW_SKELS.has(devSkel(w))) return w; } return null; };
+  const DEV_RUN = '[\\u0900-\\u097F](?:[\\u0900-\\u097F\\u200C\\u200D]|\\s+(?=[\\u0900-\\u097F]))*';
+  const RANGE_RE = new RegExp(`(${D1})\\s*(?:-|‐|‑|−|–|—|to|till|until)\\s*(${D1}|present|current|till date|now|ongoing|today|${DEV_RUN}|\\d{2}\\b)`, 'i');
+  const RANGE_LAT_RE = new RegExp(RANGE_RE.source.replace('|' + DEV_RUN, ''), 'i');
   const SINGLE_RE = new RegExp(`(${D1})`, 'i');
   const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/;
   const PHONE_IN = /(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b/;
@@ -32,7 +42,7 @@
   const yr = (y) => { y = String(y).replace(/\D/g, ''); return y.length === 2 ? (+y > 50 ? '19' : '20') + y : y; };
   function normDate(s, ref) {
     s = String(s || '').trim().toLowerCase().replace(/'/g, '');
-    if (!s || /present|current|till|now|ongoing|today/.test(s)) return '';
+    if (!s || /present|current|till|now|ongoing|today/.test(s) || devNow(s)) return '';
     let m = s.match(/^([a-z]{3})[a-z]*\.?\s*,?\s*(\d{2,4})$/); if (m && MONTHS[m[1]]) return yr(m[2]) + '-' + MONTHS[m[1]];
     m = s.match(/^(\d{1,2})[/.](\d{2,4})$/); if (m) return yr(m[2]) + '-' + String(m[1]).padStart(2, '0');
     m = s.match(/^\d{4}$/); if (m) return s;
@@ -40,7 +50,12 @@
     return s;
   }
   function findRange(t) {
-    const m = RANGE_RE.exec(t);
+    let m = RANGE_RE.exec(t);
+    if (m && /^[\u0900-\u097F]/.test(m[2])) {   // an Indic word after the dash: a range only if it reads as "present"
+      const w = devNow(m[2]);
+      if (w) return { start: normDate(m[1]), end: '', raw: m[0].slice(0, m[0].length - m[2].length) + w, present: true };
+      m = RANGE_LAT_RE.exec(t);
+    }
     if (m) { const a = normDate(m[1]); return { start: a, end: normDate(m[2], a), raw: m[0], present: /present|current|till|now|ongoing|today/i.test(m[2]) }; }
     const s = SINGLE_RE.exec(t); if (s && /(?:19|20)\d{2}/.test(s[0])) return { start: '', end: normDate(s[1]), raw: s[0], single: true };
     return null;
@@ -48,7 +63,7 @@
   const clean = (t) => String(t || '').replace(/\s+/g, ' ').replace(/\s+([,;:])/g, '$1').trim();
   const CITY_RE = /^(?:Mumbai|Pune|Delhi|New Delhi|Bengaluru|Bangalore|Hyderabad|Chennai|Kolkata|Noida|Gurgaon|Gurugram|Ahmedabad|Jaipur|Kochi|Indore|Lucknow|Chandigarh|Nagpur|Remote|Thane|Navi Mumbai|Coimbatore|Bhopal|Goa|London|Singapore|Dubai|[A-Z][a-z]+,\s*[A-Z]{2})$/;
   /** drop empty/repeated separators left after taking out dates and places: "A • • OP" -> "A" */
-  const tidy = (t) => { let s = clean(t); for (let i = 0; i < 4; i++) s = s.replace(/(?:\s*(?:[•·|–—]|\s-\s)\s*){2,}/g, ' · ').replace(/^\s*(?:[•·|,–—-]\s*)+|(?:\s*[•·|,–—-])+\s*$/g, '').trim(); return s; };
+  const tidy = (t) => { let s = clean(t); for (let i = 0; i < 4; i++) s = s.replace(/\s*(?:\(\s*[-–—,]?\s*\)|\[\s*[-–—,]?\s*\])/g, '').replace(/(?:\s*(?:[•·|–—]|\s-\s)\s*){2,}/g, ' · ').replace(/^\s*(?:[•·|,–—-]\s*)+|(?:\s*[•·|,–—-])+\s*$/g, '').trim(); return s; };
   const headKey = (t) => {
     let s = clean(t);
     if (/^(?:[A-Za-z&] ){3,}[A-Za-z&]$/.test(s)) { s = s.replace(/ /g, ''); const k = HEADNS.get(s.toLowerCase()); if (k) return k; }   // letter-spaced "E X P E R I E N C E" / "W O R K E X P E R I E N C E"
@@ -120,6 +135,15 @@
       let prev = null;
       for (const m of merged) {
         m.parts.sort((p, q) => p.x0 - q.x0);
+        // pieces of one row that interleave ("Site Engineer … Ltd" + "—" inside it, "2021 वत मान" + the "–" before "वत") are put back
+        // in x order; otherwise "2021 – वर्तमान" reads "2021 वत मान –"
+        for (let k = 1; k < m.parts.length; k++) {
+          const a = m.parts[k - 1], b = m.parts[k];
+          if (Math.abs(a.size - b.size) <= 0.15 * Math.max(a.size, b.size) && Math.abs(a.y - b.y) <= 0.15 * Math.max(a.size, b.size) && b.x0 < a.x1 - 0.5) {
+            const ls = a.lines.concat(b.lines).sort((p, q) => p.x - q.x);
+            m.parts.splice(k - 1, 2, Object.assign({}, a, { lines: ls, x1: Math.max(a.x1, b.x1), text: ls.map((l) => l.text).join(' ').trim() })); k--;
+          }
+        }
         const text = clean(m.parts.map((p) => p.text).join('   ').replace(/[\u0000-\u0008\u000e-\u001f\ufffd]+/g, ' '));
         const caps = /[A-Z]{3}/.test(text) && !/[a-z]/.test(text);
         const bold = m.parts.every((p) => p.lines.every((l) => l.bold));
@@ -249,20 +273,23 @@
       const nxt = lines[i + 1], prv = lines[i - 1];
       const projTitle = isProj && !l.isB && !l.cont && !!nxt && !nxt.bold && l.text.length < 90 && !/[.,;:]$/.test(l.text.trim()) && (l.bold || (prv && /[.!?]$/.test(prv.text.trim()) && l.text.length < 70));
       // a lone dateless line ("Example Payments Ltd      Gurugram, India") followed by "Role ..... 2023 – Present" is one entry
-      const starts = !cur || titleFirst || projTitle || (eduLine && cur && cur.lines.some((q) => /\b(?:19|20)\d{2}\b/.test(q.text))) || (hdr && !((cur.opener || (cur.lines.length === 1 && !isEdu && !isProj && !cur.lines[0].isB && cur.lines[0].text.length < 90)) && !cur.range && cur.lines.length <= 2));
+      // moderncv: "Example Fintech      Bengaluru" then "Senior Product Manager      2022–Present": a dateless, non-bullet name line
+      // right before a header line opens the next entry, even when the previous entry already has lines and dates
+      const nameFirst = !titleFirst && !isProj && !l.isB && !l.cont && !r && !!nxt && isHeaderLine(nxt) && l.text.length < 90 && /^[A-Z0-9]/.test(l.text.trim()) && !/[.,;:!?]$/.test(l.text.trim()) && (!cur || !!cur.range);
+      const starts = !cur || titleFirst || projTitle || nameFirst || (eduLine && cur && cur.lines.some((q) => /\b(?:19|20)\d{2}\b/.test(q.text))) || (hdr && !((cur.opener || (cur.lines.length === 1 && !isEdu && !isProj && !cur.lines[0].isB && cur.lines[0].text.length < 90)) && !cur.range && cur.lines.length <= 2));
       if (!starts && hdr && cur && !cur.range) { cur.lines.push(l); cur.range = r; return; }
-      if (starts) { cur = { lines: [l], range: hdr || (eduLine && r) ? r : null, opener: titleFirst }; groups.push(cur); }
+      if (starts) { cur = { lines: [l], range: hdr || (eduLine && r) ? r : null, opener: titleFirst || nameFirst }; groups.push(cur); }
       else { cur.lines.push(l); if (!cur.range && hdr) cur.range = r; }
     });
     return groups.map((g) => {
       const head = [], rest = [];
-      for (const l of g.lines) { if (!rest.length && head.length < 2 && !(l.isB || l.cont || l.bullet || BULLET_STRIP.test(l.text)) && (head.length === 0 || l.bold || findRange(l.text) || (l.text.length < 45 && !/[.;]$/.test(l.text.trim())))) head.push(l); else rest.push(l); }
+      for (const l of g.lines) { if (!rest.length && head.length < 2 && !(l.isB || l.cont || l.bullet || BULLET_STRIP.test(l.text)) && (head.length === 0 || l.text.replace(/[^\p{L}]/gu, '').length >= 3) && (head.length === 0 || l.bold || findRange(l.text) || (l.text.length < 45 && !/[.;]$/.test(l.text.trim())))) head.push(l); else rest.push(l); }
       const strip = (t) => tidy(g.range ? t.replace(new RegExp(g.range.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (g.range.present ? '(?:\\s+[A-Z]{1,3}\\b)?' : '')), ' ') : t);
       const h = head.map((l) => strip(l.text)).filter(Boolean);
       const dates = g.range ? { startDate: g.range.start, endDate: g.range.end } : { startDate: '', endDate: '' };
       if (isEdu) {
         const all = g.lines.map((l) => l.text).join(' ');
-        const sc = all.match(/(?:cgpa|gpa|sgpa|percentage|score|marks)\s*[:\-]?\s*[\d.]+\s*(?:\/\s*\d+)?%?|\b\d{2}(?:\.\d+)?\s*%|\b\d\.\d{1,2}\s*\/\s*10\b/i);
+        const sc = all.match(/(?:cgpa|gpa|sgpa|percentage|score|marks)\s*[:\-]?\s*[\d.]+\s*(?:\/\s*\d+)?%?|\b\d{1,2}(?:\.\d{1,2})?\s*(?:\/\s*\d+\s*)?(?:cgpa|gpa|sgpa)\b|\b\d{2}(?:\.\d+)?\s*%|\b\d\.\d{1,2}\s*\/\s*10\b/i);
         let [a, b] = h.length >= 2 ? [h[0], h[1]] : splitTitle(h[0] || '');
         let area = '';
         const INST = /\b(college|university|school|institute|institution|academy|board|vidyalaya|polytechnic|iit|nit|iiit|campus)\b/i;
@@ -272,14 +299,21 @@
           if (ii > 0) { a = parts.slice(ii).join(', '); b = parts[0]; area = parts.slice(1, ii).join(', '); }
         }
         const degFirst = /\b(b\.?\s?tech|b\.?\s?eng|m\.?\s?eng|bsc|msc|b\.?s\.?\b|m\.?s\.?\b|b\.?\s?e\b|bachelor|master|m\.?\s?tech|mba|b\.?\s?sc|m\.?\s?sc|b\.?com|m\.?com|b\.?a\b|m\.?a\b|ph\.?d|diploma|class|10th|12th|ssc|hsc|cbse|icse|b\.?des|bca|mca|b\.?arch|degree|secondary)/i;
+        // "B.Des, Communication Design — Example Institute of Design" + "First class with distinction": degree and institution are both on
+        // the first line, the second line is a note
+        let note = '';
+        if (h.length >= 2 && degFirst.test(h[0]) && INST.test(h[0]) && !INST.test(h[1]) && (!degFirst.test(h[1]) || /\b(?:first|second|class|distinction|honou?rs|merit|grade)\b/i.test(h[1]))) { const sp = h[0].split(/\s+[—–|]\s+|\s+at\s+/); if (sp.length === 2) { [a, b] = INST.test(sp[1]) ? [sp[1], sp[0]] : [sp[0], sp[1]]; note = h[1]; } }
         if (degFirst.test(a) && !degFirst.test(b)) [a, b] = [b, a];
         else if (INST.test(b) && !INST.test(a)) [a, b] = [b, a];   // "BEng Electronics — University of Leeds": the university is the institution
         const ent = { institution: a || '', studyType: (b || '').replace(sc ? sc[0] : '\u0000', '').replace(/[,|]\s*$/, '').trim(), area, score: sc ? clean(sc[0]) : '', ...dates, courses: [] };
         const extra = g.lines.length === 1 ? [] : bulletsFrom(rest).filter((x) => !sc || !x.includes(sc[0]));
+        if (note && !extra.includes(note) && (!sc || !note.includes(sc[0]))) extra.unshift(note);
         if (extra.length) ent.courses = extra;
         return { ent, conf: (ent.institution && g.range ? 0.85 : 0.55) * (h.length ? 1 : 0.8) };
       }
       let position = '', company = '', location = '';
+      // "Example Fintech        Bengaluru": a right-aligned city on a header line is the location
+      head.forEach((l, k) => { const ps = (l.parts || []).map((p) => clean(typeof p === 'string' ? p : p.text)).filter(Boolean); if (!location && ps.length >= 2 && CITY_RE.test(ps[ps.length - 1]) && h[k] && h[k].endsWith(ps[ps.length - 1])) { location = ps[ps.length - 1]; h[k] = tidy(h[k].slice(0, -location.length)); } });
       for (let k = 0; k < h.length; k++) { const segs = h[k].split(/\s*(?:•|·|\||\s-\s|,)\s*/).filter(Boolean); const li = segs.findIndex((x, j) => j > 0 && CITY_RE.test(x)); if (li > 0) { location = segs[li]; segs.splice(li, 1); h[k] = segs.join(' · '); } }
       if (h.length >= 2) { position = h[0]; company = h[1]; if (TITLE_RE.test(company) && !TITLE_RE.test(position)) [position, company] = [company, position]; if (/\b(pvt|ltd|inc|llc|technologies|solutions|limited|corp|company|labs|university)\b/i.test(position) && !/\b(pvt|ltd|inc|llc|technologies|solutions|limited|corp)\b/i.test(company)) [position, company] = [company, position]; }
       else [position, company] = splitTitle(h[0] || '');
@@ -487,5 +521,5 @@
     if (nSections < 3) result.warning = 'This doesn’t look like a resume — you can still edit it as a PDF.';
     return result;
   }
-  root.ResumeExtract = { extract, findRange, normDate, headKey, EMAIL_RE, PHONE_IN, DICT };
+  root.ResumeExtract = { extract, findRange, normDate, headKey, EMAIL_RE, PHONE_IN, DICT, _pageLines: pageLines };   // _pageLines: debugging (resume-corpus/lines.mjs)
 })(window);
