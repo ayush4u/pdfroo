@@ -110,7 +110,8 @@
 
   /* ---------- UI: full-screen filler, fields drawn on top of the real pages ---------- */
   const el = (t, a, ...kids) => { const n = document.createElement(t); for (const k in a || {}) { if (k.startsWith('on')) n.addEventListener(k.slice(2), a[k]); else if (a[k] !== false && a[k] != null) n.setAttribute(k, a[k] === true ? '' : a[k]); } kids.flat().forEach((c) => c != null && n.append(c)); return n; };
-  function pick() { return new Promise((res) => { const i = el('input', { type: 'file', accept: 'application/pdf,.pdf', hidden: true }); i.addEventListener('change', () => { res(i.files[0]); i.remove(); }); document.body.append(i); i.click(); }); }
+  // resolves with the file, or null if the picker is cancelled (so nothing is left waiting)
+  function pick() { return new Promise((res) => { const i = el('input', { type: 'file', accept: 'application/pdf,.pdf', hidden: true }); const done = (f) => { res(f || null); i.remove(); }; i.addEventListener('change', () => done(i.files[0])); i.addEventListener('cancel', () => done(null)); document.body.append(i); i.click(); }); }
   function save(data, name) { const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' })), a = el('a', { href: url, download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000); }
 
   const FONT_URL = BASE + 'vendor/fonts/FolioNotoSans-Regular.ttf';
@@ -123,7 +124,7 @@
   async function openFile(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let pdf;
-    try { pdf = await root.pdfjsLib.getDocument({ data: bytes.slice(0) }).promise; }
+    try { pdf = await root.pdfjsLib.getDocument({ data: bytes.slice(0), cMapUrl: BASE + 'vendor/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: BASE + 'vendor/pdfjs/standard_fonts/', isEvalSupported: false }).promise; }
     catch (e) { return notice(/password/i.test(e.name + e.message) ? 'This PDF is password-protected, so its form can’t be filled here.' : 'This file doesn’t look like a PDF Pdfroo can read.'); }
     const { pages, fields } = await readFields(pdf);
     await mapRadios(bytes, fields);
