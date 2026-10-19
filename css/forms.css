@@ -23,9 +23,8 @@ html.ff-lock, html.ff-lock body { overflow: hidden; }
 .ff-msg.bad { color: #b42318; }
 .ff-notice .ff-msg { padding: 24px 16px; }
 @media (pointer: coarse) {
-  /* small boxes on a phone: keep a 44px tap area without moving the box */
-  .ff-checkbox, .ff-radio { min-width: 0; }
-  .ff-checkbox::after, .ff-radio::after { content: ''; position: absolute; inset: -12px; }
+  /* small boxes on a phone: taps near a field are routed to it in forms.js (44px target) */
+  #landingFormBtn { min-height: 44px; }
 }
 @media (max-width: 600px) {
   .ff-pages { padding: 6px; }
