@@ -1112,3 +1112,35 @@ body.kb-open .pager { display: none; }
 @media (max-width: 640px), (pointer: coarse) { .propbar-inner { flex-wrap: nowrap; max-width: 100%; } .tb-pop.more-menu.add-sheet { display: flex; flex-wrap: wrap; gap: 6px; } }
 /* Pdfroo orange: dark text on the lighter dark-theme orange for contrast */
 [data-theme="dark"] .btn-primary, [data-theme="dark"] .dz-icon, [data-theme="dark"] .cmp-chip.on { color: #2f2219; }
+
+/* ---------- mobile UX batch ---------- */
+/* phones: the ↵ New line / New button keeps its text label (the only labelled bar button on phones) */
+@media (max-width: 640px) {
+  .propbar .tb-btn.labelled.add-trigger { width: auto; padding: 0 10px 0 8px; }
+  .propbar .add-trigger .tb-label { display: inline; }
+}
+/* phones: ⋯ menu in the editor top bar (Find, Compress, Theme) */
+.hdr-more-wrap { display: none; }
+.ed-top .tb-btn.hdr-more { width: var(--tap); height: var(--tap); min-width: var(--tap); border-radius: 12px; }
+.ed-top .tb-btn.hdr-more .i { width: 20px; height: 20px; }
+@media (max-width: 640px) {
+  .hdr-more-wrap { display: inline-flex; }
+  .ed-doc, .ed-doc-text { min-width: 0; flex: 1 1 auto; }
+  .ed-top-actions { gap: 0; }
+}
+/* touch: 44px tap targets (Apple HIG 44pt) */
+@media (pointer: coarse) {
+  :root { --tb-h: 44px; }
+  .tb-btn { min-width: 44px; }
+  .tb-btn:not(.labelled):not(.with-text) { width: 44px; }
+  .propbar .stepper .icon-btn { width: 44px; height: 44px; min-height: 44px; }
+  .pager .icon-btn { width: 44px; height: 44px; }
+  .page-ind input { width: 44px; height: 44px; }
+  .zoom-val { height: 44px; }
+  .ed-top #rzEdBtn.rz-ed-btn { height: 44px; min-height: 44px; min-width: 44px; justify-content: center; }
+  .tb-pop .swatch { width: 44px; height: 44px; }
+}
+@media (pointer: coarse) and (max-width: 640px) {
+  .tb-btn.labelled:not(.add-trigger) { width: 44px; }
+  .propbar-inner { min-height: 52px; }
+}

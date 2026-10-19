@@ -1943,12 +1943,26 @@
       if (open) { pop.style.left = ''; pop.style.top = ''; }
     }).observe(pop, { attributes: true, attributeFilter: ['hidden'] });
   }
+  /* phones: Find, Compress and Theme live in a ⋯ menu in the top bar so the file name has room */
+  (function headerMore() {
+    const dl = $('#downloadBtn'); if (!dl) return;
+    const trig = tbBtn('i-more', 'More options', null, 'hdr-more'); trig.id = 'hdrMoreBtn';
+    const wrap = popover('hdrmore', trig, (pop) => {
+      pop.classList.add('tb-menu', 'hdr-menu'); pop.setAttribute('aria-label', 'More options');
+      [['i-search', 'Find & replace', '#findBtn'], ['i-compress', 'Compress PDF', '#compressBtn'], ['i-moon', 'Dark / light theme', '.ed-top .theme-toggle']].forEach(([ic, t, sel]) => {
+        pop.appendChild(menuItem(ic, t, '', () => { closePops(); const b = $(sel); if (b) b.click(); }));
+      });
+    });
+    wrap.classList.add('hdr-more-wrap');
+    sheetify(wrap.querySelector('.tb-pop'), phoneUI);
+    dl.parentNode.insertBefore(wrap, dl);
+  })();
   // phones: fit the editing toolbar to the screen; extras go into a ⋯ sheet
   const KEEP_RX = /bold|italic|colou?r|align|move|add|paragraph|¶|block/i;
   function fitPropbar(inner) {
     if (!phoneUI() || !(ui.lineEdit || ui.newLine)) return;
     if (propbar.scrollWidth <= propbar.clientWidth + 1) return;
-    const trig = tbBtn('i-more', 'More', null, 'more-trigger', '⋯');
+    const trig = tbBtn('i-more', 'More', null, 'more-trigger');
     if (!trig.querySelector('use') || !document.getElementById('i-more')) trig.textContent = '⋯';
     const extras = [];
     const wrap = popover('more', trig, (pop) => { pop.classList.add('tb-menu', 'more-menu'); });
@@ -1962,6 +1976,15 @@
       if (KEEP_RX.test(lbl)) continue;
       extras.unshift(c);
       pop.prepend(c);
+    }
+    // still too wide (bigger touch targets, labelled New line): move the less-used kept tools too; Bold, Italic and New line stay
+    for (const c of [...inner.children].filter((c) => c !== wrap).reverse()) {
+      if (propbar.scrollWidth <= propbar.clientWidth + 1) break;
+      if (c.matches('.add-trigger') || c.querySelector('.add-trigger')) continue;
+      const lbl = (c.getAttribute('aria-label') || '') + ' ' + (c.title || '');
+      if (/bold|italic/i.test(lbl) || c.classList.contains('font-chip')) continue;
+      if (c.classList.contains('prop-sep')) { c.remove(); continue; }
+      extras.push(c); pop.appendChild(c);
     }
     if (!extras.length) wrap.remove();
     propbar.scrollLeft = 0;
