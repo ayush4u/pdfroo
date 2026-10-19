@@ -697,7 +697,10 @@
   /* ---------------- Tools ---------------- */
   function setTool(t) {
     commitText(); cancelAdd(true); cancelBlock(true); closePops();
+    const enteringEditText = t === 'edittext' && ui.tool !== 'edittext';
     ui.tool = t;
+    // phones: the signed banner + Fix-all banner would cover the lines being edited; start with the banner collapsed to its Signed chip
+    if (enteringEditText && isPhone() && doc && ui.signature && !ui.sigMin) { ui.sigMin = true; renderSigNotice(); }
     editor.dataset.tool = t;
     if (t !== 'select') ui.selectedId = null;
     $$('.tool[data-tool]').forEach((b) => {

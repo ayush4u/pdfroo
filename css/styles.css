@@ -1210,7 +1210,7 @@ body.kb-open .pager { display: none; }
 @media (max-width: 640px) {
   .find-dialog { width: calc(100vw - 16px); max-width: none; margin: 8px auto; }
   .find-preview-head { flex-wrap: wrap; }
-  .find-preview-head > span { min-width: 0; flex: 1 1 8em; }
+  .find-preview-head > span { min-width: 0; flex: 1 1 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .find-preview-head .btn { flex: none; white-space: nowrap; }
   .find-actions .btn { white-space: normal; line-height: 1.2; }
 }
