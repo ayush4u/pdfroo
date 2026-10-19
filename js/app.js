@@ -1067,7 +1067,7 @@
     });
     // "Fix bullet position" suggestions next to bullets that sit off their line
     const placed = [];
-    data.lines.filter((ln) => ln.strayBullet && ln.movable).sort((p, q) => p.y - q.y).forEach((ln) => {
+    (isPhone() ? [] : data.lines.filter((ln) => ln.strayBullet && ln.movable)).sort((p, q) => p.y - q.y).forEach((ln) => {   // phones: one banner instead (buildPropbar)
       const fs = 10 / z, h = 16 / z, w = 34 / z, gap = 4 / z;
       let x = ln.x - w - gap; const y = ln.y + ln.h / 2 - h / 2;
       while (placed.some((r) => Math.abs(r.y - y) < h + 1 / z && Math.abs(r.x - x) < w)) x -= w + 2 / z;   // don't stack chips
@@ -1651,14 +1651,14 @@
       if (c.images) parts.push(`${c.images} image${c.images === 1 ? '' : 's'}`);
       if (c.links) parts.push(`${c.links} link${c.links === 1 ? '' : 's'}`);
       if (c.annots) parts.push(`${c.annots} of your annotation${c.annots === 1 ? '' : 's'}`);
-      line('add-summary', parts.length ? `Moves ${parts.join(', ')} down ${Math.abs(p.dy).toFixed(1)} pt (outlined).${p.region && narrowRegion(f, p) ? ' The other column stays put.' : ''}` : 'Nothing below needs to move.');
+      line('add-summary', parts.length ? (isPhone() ? 'Lines below will move down.' : `Moves ${parts.join(', ')} down ${Math.abs(p.dy).toFixed(1)} pt (outlined).`) + `${p.region && narrowRegion(f, p) ? ' The other column stays put.' : ''}` : 'Nothing below needs to move.');
       const nl = (p.newLines || []).filter((l) => !l.clone);
       if (nl.length) line('add-font', nl[0].label + (new Set(nl.map((l) => l.y.toFixed(1))).size > 1 ? ` · wraps to ${new Set(nl.map((l) => l.y.toFixed(1))).size} lines` : ''));
       if (p.ok && p.flowInfo) renderFlowMini(f, p, box, line);
     }
     if (p.uncertain) {
       const u = line('add-uncertain', (p.notes && p.notes[0]) || 'The column edges are a guess.');
-      u.appendChild(document.createTextNode(' Drag the orange edges on the page to fix the column, then check the outlines.'));
+      u.appendChild(document.createTextNode(isPhone() ? ' Drag the orange edges on the page if the column looks wrong.' : ' Drag the orange edges on the page to fix the column, then check the outlines.'));
       (p.notes || []).slice(1).forEach((n) => line('add-note', n));
     } else (p.notes || []).forEach((n) => line('add-note', n));
     if (p.ok && p.fit) line('add-note', `Kept on one page: tightens ${p.fit.gaps} gap${p.fit.gaps === 1 ? '' : 's'} by up to ${p.fit.gap} pt (${p.fit.total} pt in all${p.fit.paraGaps ? ', paragraph gaps first' : ''}; never below 90%, font size unchanged).`);
@@ -1759,8 +1759,19 @@
   function revealFlowOnPhone(f) {
     if (ui.addFlow !== f || !f.panel) return;
     const fi = f.plan && f.plan.ok && f.plan.flowInfo;
-    if (!isPhone() || !fi) { pageWrap.style.marginBottom = ''; return; }
+    if (!isPhone()) { pageWrap.style.marginBottom = ''; return; }
     pageWrap.style.marginBottom = f.panel.offsetHeight + 'px';
+    if (!fi) {
+      // keep the zoom; bring the new (green) slot into view between the top of the page view and the sheet, once
+      const a = !f.slotShown && document.querySelector('.reflow-preview .rf-added'); if (!a) return;
+      f.slotShown = true;
+      requestAnimationFrame(() => {
+        if (ui.addFlow !== f) return;
+        const t = a.getBoundingClientRect(), vr = viewport.getBoundingClientRect(), sheetTop = f.panel.getBoundingClientRect().top;
+        viewport.scrollBy({ top: t.top + t.height / 2 - (vr.top + Math.min(vr.bottom, sheetTop)) / 2, behavior: 'auto' });
+      });
+      return;
+    }
     if (f.flowShown === fi.label + fi.out.length) return;
     f.flowShown = fi.label + fi.out.length;
     requestAnimationFrame(() => {
@@ -2046,6 +2057,7 @@
   }
   function buildPropbar() {
     propbar.replaceChildren();
+    document.querySelectorAll('.fix-banner').forEach((e) => e.remove());
     if (!doc) return;
     const s = selected();
     const editingText = ui.editing ? ui.editing.annot : null;
@@ -2106,7 +2118,7 @@
         addNudge();
         addTools(inner, sep, ln.id);
         blockBtn(ln.id);
-      } else if (ui.addFlow) inner.appendChild(hint('i-plus', ui.addFlow.plan && ui.addFlow.plan.uncertain ? 'Check the outlined area — drag the orange column edges if they’re wrong' : 'Outlined: what moves down · dashed: where it goes'));
+      } else if (ui.addFlow) inner.appendChild(hint('i-plus', isPhone() ? 'Green: your new line · lines below move down' : ui.addFlow.plan && ui.addFlow.plan.uncertain ? 'Check the outlined area — drag the orange column edges if they’re wrong' : 'Outlined: what moves down · dashed: where it goes'));
       else if (!data) inner.appendChild(hint('i-text-edit', 'Reading the text on this page…'));
       else if (data.refusal) inner.appendChild(hint('i-help', data.refusal.message));
       else {
@@ -2118,8 +2130,18 @@
         const stray = data.lines.filter((l) => l.strayBullet && l.movable);
         if (stray.length) {
           inner.appendChild(sep());
-          const fb = propBtn('i-check', stray.length === 1 ? 'Fix bullet position' : `Fix all bullets (${stray.length})`, () => fixBullets(stray.map((l) => l.id)));
-          fb.classList.add('fix-bullets'); inner.appendChild(fb);
+          if (isPhone()) {
+            // phones: one banner over the page instead of a badge on every bullet (badges cover the text at phone zoom)
+            const bn = document.createElement('div'); bn.className = 'fix-banner'; bn.setAttribute('role', 'status');
+            bn.innerHTML = '<svg class="i"><use href="#i-help"/></svg><span></span>';
+            bn.querySelector('span').textContent = stray.length === 1 ? '1 bullet looks misaligned' : `${stray.length} bullets look misaligned`;
+            const go = document.createElement('button'); go.type = 'button'; go.className = 'btn btn-primary fix-banner-go'; go.textContent = stray.length === 1 ? 'Fix' : 'Fix all';
+            go.addEventListener('click', () => fixBullets(stray.map((l) => l.id)));
+            bn.appendChild(go); $('.work').appendChild(bn);
+          } else {
+            const fb = propBtn('i-check', stray.length === 1 ? 'Fix bullet position' : `Fix all bullets (${stray.length})`, () => fixBullets(stray.map((l) => l.id)));
+            fb.classList.add('fix-bullets'); inner.appendChild(fb);
+          }
         }
         if (!sel.length && ui.lastEdit && ui.lastEdit.pageId === curPage().id) inner.appendChild(fontChip(ui.lastEdit.label, ui.lastEdit.tier));
       }

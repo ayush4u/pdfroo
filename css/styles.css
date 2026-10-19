@@ -1186,3 +1186,15 @@ body.kb-open .pager { display: none; }
   .tools-sheet .tools-item[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); }
   .tools-sheet .tools-item .i { width: 22px; height: 22px; }
 }
+/* phones: one "N bullets look misaligned · Fix all" banner instead of per-bullet badges */
+.fix-banner { position: absolute; z-index: 20; top: 8px; left: 8px; right: 8px; display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 12px; border-radius: 14px; background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; box-shadow: var(--shadow); font-size: 13.5px; font-weight: 600; }
+.fix-banner span { flex: 1; min-width: 0; }
+.fix-banner .i { width: 18px; height: 18px; }
+.fix-banner .fix-banner-go { min-height: 44px; height: 44px; padding: 0 16px; flex: none; }
+[data-theme="dark"] .fix-banner { background: #3a2414; color: #fdba74; border-color: #9a3412; }
+/* phones: add-line preview highlights only the new slot (no page-wide outlines); column edges only when they're a guess */
+@media (max-width: 640px) {
+  .reflow-preview .rf-region, .reflow-preview .rf-moved, .reflow-preview .rf-ghost { display: none; }
+  .reflow-preview:not(.uncertain) .rf-edge { display: none; }
+  .reflow-preview .rf-added { fill: rgba(22, 163, 74, .22); }
+}
