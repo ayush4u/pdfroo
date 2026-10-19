@@ -1200,3 +1200,26 @@ body.kb-open .pager { display: none; }
 }
 .tl-short { display: none; }
 @media (max-width: 400px) { .toolbar .tl-long { display: none; } .toolbar .tl-short { display: inline; } }
+/* ---- mobile review round 2 ---- */
+/* phones: while previewing a new line, only the green slot (and guessed column edges) show; no dashed line boxes */
+@media (max-width: 640px) {
+  .overlay:has(.reflow-preview) .tline:not(.run-sel) { stroke: none; fill: transparent; }
+  .reflow-preview .rf-added { stroke-dasharray: none; }
+}
+/* Find & replace on phones: full width with even margins; header and action buttons wrap instead of clipping */
+@media (max-width: 640px) {
+  .find-dialog { width: calc(100vw - 16px); max-width: none; margin: 8px auto; }
+  .find-preview-head { flex-wrap: wrap; }
+  .find-preview-head > span { min-width: 0; flex: 1 1 8em; }
+  .find-preview-head .btn { flex: none; white-space: nowrap; }
+  .find-actions .btn { white-space: normal; line-height: 1.2; }
+}
+/* touch: 44px targets */
+@media (pointer: coarse) {
+  .find-dialog .btn, .find-opts .find-go, .find-actions .btn { min-height: 44px; }
+  .find-field input { height: 44px; }
+  .sig-banner-close { width: 44px; height: 44px; margin: -10px -4px -10px 0; }
+  .range input[type=range] { height: 44px; }
+  #landing nav .roo-pill { min-height: 44px; }
+  .rz-x:not(.rz-x-in), .rz-scrim .rz-btn { min-width: 44px; min-height: 44px; }
+}
