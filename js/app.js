@@ -1519,9 +1519,9 @@
     const pg = curPage(); if (!pg || ui.addFlow) return;
     const o = addOptionsFor(pg, lineId);
     if (!o || !(o.line || o.bullet || o.section)) return;
-    const trig = tbBtn('i-plus', 'Add a line, bullet or section like this one (Enter adds a line below)', null, 'add-trigger', 'Add');
-    // phones: close the keyboard on purpose and show the options as a bottom sheet (no reliance on per-browser keyboard handling)
-    trig.addEventListener('click', () => {
+    const OPTS = [['line', 'New line below', 'i-enter', 'New line'], ['bullet', 'New bullet below', 'i-list-add', 'New bullet'], ['section', 'New section like this', 'i-layers', 'New section']].filter(([m]) => o[m]);
+    // phones: close the keyboard on purpose before a sheet/panel opens (no reliance on per-browser keyboard handling)
+    const keepCaret = () => {
       if (!phoneUI()) return;
       const a = document.activeElement;
       if (a && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName))) {
@@ -1529,17 +1529,28 @@
         ui.addSheetRestore = { lineId, caret, start: a.selectionStart };
         a.blur();
       }
-    }, true);
+    };
+    const run = async (m) => {
+      closePops();
+      if (ui.lineEdit) { await commitLineEdit(); }
+      startAdd(m, lineId);
+      if (ui.addSheetRestore) { ui.addSheetRestore = null; requestAnimationFrame(() => { const t = document.querySelector('.add-panel .add-input') || document.querySelector('.line-editor'); if (t) { t.focus(); try { if (t.isContentEditable) { const r = document.createRange(); r.selectNodeContents(t); r.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); } else if (t.setSelectionRange) { const n = t.value.length; t.setSelectionRange(n, n); } } catch (_) {} } }); }
+    };
+    // only one thing can be added here: make the button do it directly, named for what it does (no menu with a single item)
+    if (OPTS.length === 1) {
+      const [m, tip, ic, short] = OPTS[0];
+      const b = tbBtn(ic, tip + ' (same font, size and indent; Enter does this too)', null, 'add-trigger add-direct add-' + m, null, short);
+      b.addEventListener('click', keepCaret, true);
+      b.addEventListener('click', () => run(m));
+      inner.appendChild(b);
+      return;
+    }
+    const trig = tbBtn('i-enter', 'New line, bullet or section like this one (Enter adds a line below)', null, 'add-trigger', null, 'New');
+    trig.addEventListener('click', keepCaret, true);
     const wrapEl = popover('add', trig, (pop) => {
-      pop.classList.add('tb-menu', 'add-like'); pop.setAttribute('aria-label', 'Add like this');
-      [['line', 'Line below', 'i-plus'], ['bullet', 'Bullet below', 'i-plus'], ['section', 'Section like this', 'i-layers']].forEach(([m, t, ic]) => {
-        if (!o[m]) return;
-        const b = menuItem(ic, t, 'Same font, size, colour and indent; what’s below moves down', async () => {
-          closePops();
-          if (ui.lineEdit) { await commitLineEdit(); }
-          startAdd(m, lineId);
-          if (ui.addSheetRestore) { ui.addSheetRestore = null; requestAnimationFrame(() => { const t = document.querySelector('.add-panel .add-input') || document.querySelector('.line-editor'); if (t) { t.focus(); try { if (t.isContentEditable) { const r = document.createRange(); r.selectNodeContents(t); r.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); } else if (t.setSelectionRange) { const n = t.value.length; t.setSelectionRange(n, n); } } catch (_) {} } }); }
-        });
+      pop.classList.add('tb-menu', 'add-like'); pop.setAttribute('aria-label', 'New like this');
+      OPTS.forEach(([m, t, ic]) => {
+        const b = menuItem(ic, t, 'Same font, size, colour and indent; what’s below moves down', () => run(m));
         b.classList.add('add-' + m); pop.appendChild(b);
       });
     });
