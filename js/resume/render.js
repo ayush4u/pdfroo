@@ -57,6 +57,7 @@
     const cs = { r: new Set(F.getCharacterSet()), b: new Set(FB.getCharacterSet()) };
     const safe = (t, f) => { const set = f === FB ? cs.b : cs.r; return Array.from(String(t || '').replace(/[\u2028\n\r\t]+/g, ' ')).map((c) => set.has(c.codePointAt(0)) ? c : ({ '\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2022': '-', '\u20b9': 'Rs.' })[c] || (c.trim() ? '?' : ' ')).join(''); };
     const W = A4[0], H = A4[1], m = T.m, cw = W - 2 * m;
+    const MINPT = Math.min(FIT_MIN.body, TEMPLATES[tid].body);   // no text below 9.5pt (contact line, narrow dates) unless the template's own body is smaller
     const ink = L.rgb(0.2, 0.2, 0.2), soft = L.rgb(0.36, 0.36, 0.36);
     const A = P.accent ? safeAccent(P.accent) : null, ac = A ? hexRgb(A.hex).map((v) => v / 255) : null;
     const acc = ac ? L.rgb(...ac) : L.rgb(...T.accent), nameCol = ac ? acc : ink;
@@ -72,7 +73,7 @@
       if (ln) out.push(ln); return out;
     };
     const text = (t, o) => {
-      const f = o.bold ? FB : F, s = o.size || T.body, lh = s * (o.lh || 1.32) * T.lhK, x0 = o.x != null ? o.x : CX, w = o.w || (CX + CW - x0);
+      const f = o.bold ? FB : F, s = Math.max(MINPT, o.size || T.body), lh = s * (o.lh || 1.32) * T.lhK, x0 = o.x != null ? o.x : CX, w = o.w || (CX + CW - x0);
       for (const ln of wrap(t, f, s, w)) {
         need(lh); y -= lh;
         const tw = f.widthOfTextAtSize(ln, s);
@@ -81,7 +82,7 @@
       }
     };
     const rowWithDate = (left, right, o) => {   // "Role, Company ........ 2020 – 2022" on one baseline, left text first
-      const s = o.size || T.body, f = FB, rw = right ? F.widthOfTextAtSize(safe(right, F), s) : 0;
+      const s = Math.max(MINPT, o.size || T.body), f = FB, rw = right ? F.widthOfTextAtSize(safe(right, F), s) : 0;
       const narrow = CW < 300, lines = wrap(left, f, s, narrow ? CW : CW - rw - 12), lh = s * 1.35 * T.lhK;
       lines.forEach((ln, i) => {
         need(lh); y -= lh;

@@ -223,10 +223,10 @@
     const T = RR.TEMPLATES[P.template] || RR.TEMPLATES.modern;
     const n = out.pages, close = n === 2 && out.overflow > 0 && out.overflow < 0.2;
     if (!P.fit && n < 2) { bar.hidden = true; return; }
-    if (!P.fit && !close) { bar.hidden = false; bar.append(h('span', { class: 'rz-fit-n' }, n + ' pages')); return; }
+    // the button is always offered when it runs over: a long spill may still fit; if not, Fit keeps the pages and says so
     bar.hidden = false;
     const lines = Math.max(1, Math.round(out.overflow * (841.89 - 2 * T.m) / (T.body * 1.32)));
-    const msg = !P.fit ? 'Spills onto page 2 by ' + (lines <= 6 ? lines + ' line' + (lines > 1 ? 's' : '') : 'a few lines') + ' –'
+    const msg = !P.fit ? (close ? 'Spills onto page 2 by ' + (lines <= 6 ? lines + ' line' + (lines > 1 ? 's' : '') : 'a few lines') + ' –' : (n === 2 ? 'Runs onto page 2 –' : 'Runs to ' + n + ' pages –'))
       : out.fitted === 'no' ? 'Too long to fit on one page, even with tighter spacing — kept ' + n + ' pages.'
       : out.fitted === 'yes' ? 'Tightened spacing' + (out.fit && out.fit.body ? ' and text size (' + out.fit.body + 'pt)' : '') + ' to fit.' : 'Already fits on one page.';
     bar.append(h('span', { class: 'rz-fit-msg', role: 'status' }, msg),

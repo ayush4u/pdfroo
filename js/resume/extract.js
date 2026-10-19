@@ -10,17 +10,17 @@
     education: ['education', 'academic qualifications', 'educational qualification', 'educational qualifications', 'scholastic record', 'academics', 'academic details', 'qualifications', 'academic background', 'education and training'],
     skills: ['skills', 'technical skills', 'key skills', 'core competencies', 'areas of expertise', 'it skills', 'skill set', 'skills & abilities', 'skills and abilities', 'technologies', 'tools', 'computer skills', 'soft skills', 'strengths', 'expertise', 'languages and technologies', 'programming skills'],
     projects: ['projects', 'academic projects', 'major project', 'minor project', 'personal projects', 'key projects', 'project'],
-    awards: ['certifications', 'certificates', 'achievements', 'awards', 'honors', 'honours', 'honors & awards', 'awards and achievements', 'extra-curricular activities', 'extracurricular activities', 'extra curricular activities', 'positions of responsibility', 'por', 'activities', 'accomplishments', 'leadership', 'training', 'courses', 'trainings'],
+    awards: ['certifications', 'certificates', 'achievements', 'awards', 'honors', 'honours', 'honors & awards', 'awards and achievements', 'grants and awards', 'extra-curricular activities', 'extracurricular activities', 'extra curricular activities', 'positions of responsibility', 'por', 'activities', 'accomplishments', 'leadership', 'training', 'courses', 'trainings'],
     languages: ['languages known', 'languages', 'language'],
     interests: ['hobbies', 'interests', 'hobbies and interests', 'hobbies & interests'],
-    other: ['references', 'publications', 'volunteer', 'volunteering', 'misc', 'miscellaneous', 'additional information', 'other', 'research', 'patents', 'talks'],
+    other: ['references', 'referees', 'selected publications', 'publications', 'volunteer', 'volunteering', 'misc', 'miscellaneous', 'additional information', 'other', 'research', 'patents', 'talks'],
     personal: ['personal details', 'personal information', 'personal profile', 'personal data', 'personal info'],
     declaration: ['declaration'],
   };
   const HEAD = new Map(); for (const k in DICT) for (const w of DICT[k]) HEAD.set(w, k);
   const MON = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
   const D1 = `(?:${MON}\\s*,?\\s*'?\\d{2,4}|\\d{1,2}[/.]\\d{2,4}|(?:19|20)\\d{2})`;
-  const RANGE_RE = new RegExp(`(${D1})\\s*(?:-|–|—|to|till|until)\\s*(${D1}|present|current|till date|now|ongoing|today|\\d{2}\\b)`, 'i');
+  const RANGE_RE = new RegExp(`(${D1})\\s*(?:-|‐|‑|−|–|—|to|till|until)\\s*(${D1}|present|current|till date|now|ongoing|today|\\d{2}\\b)`, 'i');
   const SINGLE_RE = new RegExp(`(${D1})`, 'i');
   const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/;
   const PHONE_IN = /(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b/;
@@ -47,11 +47,11 @@
   const clean = (t) => String(t || '').replace(/\s+/g, ' ').replace(/\s+([,;:])/g, '$1').trim();
   const CITY_RE = /^(?:Mumbai|Pune|Delhi|New Delhi|Bengaluru|Bangalore|Hyderabad|Chennai|Kolkata|Noida|Gurgaon|Gurugram|Ahmedabad|Jaipur|Kochi|Indore|Lucknow|Chandigarh|Nagpur|Remote|Thane|Navi Mumbai|Coimbatore|Bhopal|Goa|London|Singapore|Dubai|[A-Z][a-z]+,\s*[A-Z]{2})$/;
   /** drop empty/repeated separators left after taking out dates and places: "A • • OP" -> "A" */
-  const tidy = (t) => { let s = clean(t); for (let i = 0; i < 4; i++) s = s.replace(/(?:\s*(?:[•·|]|\s[-–—]\s)\s*){2,}/g, ' · ').replace(/^\s*(?:[•·|,–—-]\s*)+|(?:\s*[•·|,–—-])+\s*$/g, '').trim(); return s; };
+  const tidy = (t) => { let s = clean(t); for (let i = 0; i < 4; i++) s = s.replace(/(?:\s*(?:[•·|–—]|\s-\s)\s*){2,}/g, ' · ').replace(/^\s*(?:[•·|,–—-]\s*)+|(?:\s*[•·|,–—-])+\s*$/g, '').trim(); return s; };
   const headKey = (t) => {
     let s = clean(t);
     if (/^(?:[A-Za-z&] ){3,}[A-Za-z&]$/.test(s)) s = s.replace(/ /g, '');           // letter-spaced "E X P E R I E N C E"
-    s = s.toLowerCase().replace(/[:：|\-–—_•.]+$/, '').replace(/^[^a-z]+/, '').replace(/\s+/g, ' ').trim();
+    s = s.toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').replace(/[:：|\-–—_•.]+$/, '').replace(/^[^a-z]+/, '').replace(/\s+/g, ' ').trim();
     if (HEAD.has(s)) return HEAD.get(s);
     if (/[\/|]/.test(s)) { for (const part of s.split(/\s*[\/|]\s*/)) { const k = part && headKey(part); if (k) return k; } }   // bilingual "Experience / अनुभव"
     const s2 = s.replace(/&/g, 'and'); if (HEAD.has(s2)) return HEAD.get(s2);
@@ -67,7 +67,7 @@
     const hid = geo ? (geo.texts || []).filter((t) => t.hidden) : [], vis = geo ? (geo.texts || []).filter((t) => !t.hidden && !t.rot) : [];
     const view = an.page.view, H = view[3] - view[1], W = view[2] - view[0];
     const lines = (an.lines || []).filter((l) => {
-      if (!clean(l.text) || l.size < 2) return false;
+      if (!clean(String(l.text).replace(/[\u0000-\u001f\ufffd]+/g, '')) || l.size < 2) return false;
       if (/invisible text layer|hidden underneath an image/.test(l.reason || '')) return false;   // same rule as the clip check
       if (!hid.length) return true;
       const pb = probeBox(l);
@@ -80,7 +80,16 @@
     // columns: one gutter (sidebar layouts); rows crossing it are full-width bands (the header)
     let cols = [rows];
     const gs = rows.length >= 8 ? RF.columnGutters(rows, -1e9, 1e9, Math.max(8, 0.9 * body)) : [];
-    const g = gs.filter((x) => x.left >= 4 && x.right >= 4 && x.mid > view[0] + 0.18 * W && x.mid < view[0] + 0.82 * W).sort((a, b) => (b.left + b.right) - (a.left + a.right))[0];
+    let g = gs.filter((x) => x.left >= 4 && x.right >= 4 && x.mid > view[0] + 0.18 * W && x.mid < view[0] + 0.82 * W).sort((a, b) => (b.left + b.right) - (a.left + a.right))[0];
+    // a "gutter" between left text and right-aligned dates on the SAME baselines is a table row ("Role, Company ..... 2019 - Present"),
+    // not a sidebar: reject it when most rows on the narrow side are dates sitting next to a row on the other side
+    if (g) {
+      const lf = rows.filter((r) => r.x1 <= g.a + 0.5), rt = rows.filter((r) => r.x0 >= g.b - 0.5);
+      const nar = (Math.max(0, ...lf.map((r) => r.x1 - r.x0)) >= Math.max(0, ...rt.map((r) => r.x1 - r.x0))) ? rt : lf, wide = nar === rt ? lf : rt;
+      const dateRow = (r) => (findRange(r.text) || /^\s*(?:present|current)\s*$/i.test(r.text)) && clean(r.text).split(/\s+/).length <= 7;
+      const paired = nar.filter((r) => dateRow(r) && wide.some((q) => Math.abs(q.y - r.y) <= 0.3 * Math.max(q.size, r.size)));
+      if (nar.length && paired.length >= 0.6 * nar.length) g = null;
+    }
     if (g) {
       const cross = rows.filter((r) => r.x0 < g.a - 0.5 && r.x1 > g.b + 0.5);
       const crossTop = cross.length ? Math.min(...cross.map((r) => r.y)) : null;
@@ -106,7 +115,7 @@
       let prev = null;
       for (const m of merged) {
         m.parts.sort((p, q) => p.x0 - q.x0);
-        const text = clean(m.parts.map((p) => p.text).join('   '));
+        const text = clean(m.parts.map((p) => p.text).join('   ').replace(/[\u0000-\u0008\u000e-\u001f\ufffd]+/g, ' '));
         const caps = /[A-Z]{3}/.test(text) && !/[a-z]/.test(text);
         const bold = m.parts.every((p) => p.lines.every((l) => l.bold));
         const gap = prev ? prev.y - m.y : 99;
@@ -234,7 +243,8 @@
       // projects: a bold (or stand-alone short) title line followed by its description opens a new project
       const nxt = lines[i + 1], prv = lines[i - 1];
       const projTitle = isProj && !l.isB && !l.cont && !!nxt && !nxt.bold && l.text.length < 90 && !/[.,;:]$/.test(l.text.trim()) && (l.bold || (prv && /[.!?]$/.test(prv.text.trim()) && l.text.length < 70));
-      const starts = !cur || titleFirst || projTitle || (eduLine && cur && cur.lines.some((q) => /\b(?:19|20)\d{2}\b/.test(q.text))) || (hdr && !(cur.opener && !cur.range && cur.lines.length <= 2));
+      // a lone dateless line ("Example Payments Ltd      Gurugram, India") followed by "Role ..... 2023 – Present" is one entry
+      const starts = !cur || titleFirst || projTitle || (eduLine && cur && cur.lines.some((q) => /\b(?:19|20)\d{2}\b/.test(q.text))) || (hdr && !((cur.opener || (cur.lines.length === 1 && !isEdu && !isProj && !cur.lines[0].isB && cur.lines[0].text.length < 90)) && !cur.range && cur.lines.length <= 2));
       if (!starts && hdr && cur && !cur.range) { cur.lines.push(l); cur.range = r; return; }
       if (starts) { cur = { lines: [l], range: hdr || (eduLine && r) ? r : null, opener: titleFirst }; groups.push(cur); }
       else { cur.lines.push(l); if (!cur.range && hdr) cur.range = r; }
@@ -256,8 +266,9 @@
           const parts = (seg[0] || '').split(/\s*,\s*/).filter(Boolean), ii = parts.findIndex((x, j) => j > 0 && INST.test(x));
           if (ii > 0) { a = parts.slice(ii).join(', '); b = parts[0]; area = parts.slice(1, ii).join(', '); }
         }
-        const degFirst = /\b(b\.?\s?tech|b\.?\s?e\b|bachelor|master|m\.?\s?tech|mba|b\.?\s?sc|m\.?\s?sc|b\.?com|m\.?com|b\.?a\b|m\.?a\b|ph\.?d|diploma|class|10th|12th|ssc|hsc|cbse|icse|b\.?des|bca|mca|b\.?arch|degree|secondary)/i;
+        const degFirst = /\b(b\.?\s?tech|b\.?\s?eng|m\.?\s?eng|bsc|msc|b\.?s\.?\b|m\.?s\.?\b|b\.?\s?e\b|bachelor|master|m\.?\s?tech|mba|b\.?\s?sc|m\.?\s?sc|b\.?com|m\.?com|b\.?a\b|m\.?a\b|ph\.?d|diploma|class|10th|12th|ssc|hsc|cbse|icse|b\.?des|bca|mca|b\.?arch|degree|secondary)/i;
         if (degFirst.test(a) && !degFirst.test(b)) [a, b] = [b, a];
+        else if (INST.test(b) && !INST.test(a)) [a, b] = [b, a];   // "BEng Electronics — University of Leeds": the university is the institution
         const ent = { institution: a || '', studyType: (b || '').replace(sc ? sc[0] : '\u0000', '').replace(/[,|]\s*$/, '').trim(), area, score: sc ? clean(sc[0]) : '', ...dates, courses: [] };
         const extra = g.lines.length === 1 ? [] : bulletsFrom(rest).filter((x) => !sc || !x.includes(sc[0]));
         if (extra.length) ent.courses = extra;
@@ -359,7 +370,8 @@
     if (ph) { r.basics.phone = clean(ph[0]).replace(/^\+?\d{1,3}\)\s*/, (x) => x.replace(')', '')); const d = ph[0].replace(/\D/g, '').replace(/^91(?=\d{10}$)/, ''); conf['basics.phone'] = d.length === 10 ? 0.95 : 0.6; }
     else if ((ph = phoneSrc.match(PHONE_ANY)) && ph[0].replace(/\D/g, '').length >= 9 && ph[0].replace(/\D/g, '').length <= 15 && !/^(19|20)\d{2}\s*[-–]/.test(ph[0].trim())) { r.basics.phone = clean(ph[0]).replace(/^(\+?\d{1,3})\)\s*/, '$1 ').replace(/^\((?=[^)]*$)/, ''); conf['basics.phone'] = 0.7; }
     const nameText0 = (l) => clean(String(l.parts[0] || l.text).replace(/[\u0000-\u001f\ufffd]/g, '')).replace(/\s{2,}.*/, '').replace(/\s*[|·•,–—].*$/, '').replace(/\s*\((?:fictional|cv|resume)\)\s*$/i, '');
-    const nameText = (l) => { const t = nameText0(l); return /\s/.test(t) ? t : t.replace(/([a-z])([A-Z])/g, '$1 $2'); };
+    // letter-spaced "S A R A D S O U Z A" is collapsed; word breaks come from the e-mail local part (sara.dsouza@)
+    const nameText = (l) => { let t = nameText0(l); if (/^(?:[A-Za-z] ){3,}[A-Za-z]$/.test(t)) { t = t.replace(/ /g, ''); if (emTok.length > 1 && t.toLowerCase() === emTok.join('')) { let k = 0; t = emTok.map((w) => { const s = t.slice(k, k + w.length); k += w.length; return s; }).join(' '); } } return /\s/.test(t) ? t : t.replace(/([a-z])([A-Z])/g, '$1 $2'); };
     const emTok = em ? em[0].split('@')[0].toLowerCase().split(/[._\-\d+]+/).filter((x) => x.length >= 3) : [];
     const p0 = (l) => String(l.parts[0] || l.text);
     const nameCands = p1.filter((l) => l.relY < 0.35 && !l.hkey && !headKey(p0(l)) && !EMAIL_RE.test(p0(l)) && !/linkedin|github|http|resume|curriculum|vitae|^cv$|\.com/i.test(p0(l)) && !/^(contact|profile|about|personal|summary|details|info|methods)\b/i.test(p0(l)))
@@ -373,15 +385,19 @@
     const REG = 'India|USA|UK|Canada|Germany|Singapore|UAE|Australia|Maharashtra|Karnataka|Tamil Nadu|Kerala|Telangana|Andhra Pradesh|Gujarat|Rajasthan|Punjab|Haryana|Delhi|Uttar Pradesh|Madhya Pradesh|West Bengal|Bihar|Odisha|Assam|Goa|Jharkhand|Chhattisgarh|Uttarakhand|Himachal Pradesh|Jammu and Kashmir|NCR|[A-Z]{2}';
     const loc = top.map((l) => l.text).join(' · ').match(new RegExp('\\b([A-Z][a-zA-Z]+(?:\\s[A-Z][a-zA-Z]+)?),\\s*(' + REG + ')\\b'));
     if (loc && loc[0] !== r.basics.name && !/manager|engineer|developer|designer|analyst/i.test(loc[1])) { r.basics.location = { city: loc[1], region: loc[2] }; conf['basics.location'] = 0.6; }
+    const NOT_TITLE = (t) => /\b(?:university|college|school|institute|academy)\b/i.test(t) || /^\(.*\)$/.test(t.trim()) || !!headKey(t) || /^(?:contact|details|info)$/i.test(t.trim());
     if (nm) {
       // the headline is the first line right under the name, before the contact block or the first heading:
       // "AI Automation Engineer | LLM agents, RAG, UiPath" is the job title, not an "Other" section
-      const isContact = (t) => EMAIL_RE.test(t) || PHONE_IN.test(t) || /linkedin|github|https?:|www\.|\.(?:com|io|in|dev|me|org)\b/i.test(t);
+      const isContact = (t) => /^[^\x00-\x7f]\s+\S/.test(t) || EMAIL_RE.test(t) || PHONE_IN.test(t) || /linkedin|github|https?:|www\.|\.(?:com|io|in|dev|me|org)\b/i.test(t);
       for (let i = all.indexOf(nm) + 1; i < all.length; i++) {
         const l = all[i];
-        if (l.page !== 0 || l.hkey || l.relY > nm.relY + 0.1 || isContact(l.text)) break;
-        const t = clean(l.text), words = t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
-        if (t.length >= 3 && t.length <= 90 && words <= 12 && !/[.]$/.test(t) && !/\d{4,}/.test(t)) { r.basics.label = t; conf['basics.label'] = 0.7; }
+        // "Medicinal Chemist      Chennai, India | example.com/x": the title is the non-contact part of the line
+        const own = (l.parts || [l.text]).filter((p) => p && !isContact(p) && !(loc && clean(p).startsWith(loc[0])));
+        if (l.page !== 0 || l.hkey || l.relY > nm.relY + 0.1 || (isContact(l.text) && !(own.length && l.parts && l.parts.length > 1 && !isContact(own[0])))) break;
+        const t = clean(isContact(l.text) || own.length < (l.parts || []).length ? own[0] : l.text), words = t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+        const notTitle = NOT_TITLE(t) || /^\d+[\w/-]*\s+\S.*\b(?:road|rd|street|st|lane|ln|avenue|ave|nagar|marg|sector|block)\b/i.test(t) || (loc && clean(t) === clean(loc[0]));
+        if (!notTitle && t.length >= 3 && t.length <= 90 && words <= 12 && !/[.]$/.test(t) && !/\d{4,}/.test(t)) { r.basics.label = t; conf['basics.label'] = 0.7; }
         break;
       }
     }
@@ -408,10 +424,10 @@
       else other.push({ title: s.title, text: bulletsFrom(s.lines).join('\n') });
     }
     // anything before the first heading that isn't contact goes to "Other" (nothing is silently dropped)
-    const contactish = (t) => EMAIL_RE.test(t) || PHONE_ANY.test(t) || /linkedin|github|http/i.test(t) || t === (nm && nm.text) || (r.basics.label && t.includes(r.basics.label)) || (loc && t.includes(loc[0]));
+    const contactish = (t) => EMAIL_RE.test(t) || PHONE_ANY.test(t) || /linkedin|github|http/i.test(t) || /^\s*(?:www\.)?[\w-]+\.(?:com|io|in|dev|me|org|net|co|xyz|site)(?:\/\S*)?\s*$/i.test(t) || /^\s*(?:mastodon|twitter|telegram|skype|x)\b.*@\w/i.test(t) || t === (nm && nm.text) || (r.basics.label && t.includes(r.basics.label)) || (loc && t.includes(loc[0]));
     // a short job-title line between the contact block and the summary is the job title, not summary text
     if (!r.basics.label) {
-      const tl = pre.find((l) => l !== nm && !contactish(l.text) && l.text.split(/\s+/).length <= 6 && !/[.:]$/.test(l.text) && /^[A-Za-z][A-Za-z &/,-]+$/.test(l.text) && (TITLE_RE.test(l.text) || l.bold));
+      const tl = pre.find((l) => l !== nm && !contactish(l.text) && !NOT_TITLE(l.text) && l.text.split(/\s+/).length <= 6 && !/[.:]$/.test(l.text) && /^[A-Za-z][A-Za-z &/,-]+$/.test(l.text) && (TITLE_RE.test(l.text) || l.bold));
       if (tl) { r.basics.label = tl.text; conf['basics.label'] = 0.7; pre.splice(pre.indexOf(tl), 1); }
     }
     const leftover = pre.filter((l) => !contactish(l.text) && l !== nm && l.text.length > 2);
