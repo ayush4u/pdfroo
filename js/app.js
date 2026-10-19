@@ -203,6 +203,7 @@
     const banner = $('#signedBanner'), chip = $('#signedChip');
     const on = !!(doc && ui.signature);
     banner.hidden = !on || ui.sigMin; chip.hidden = !on || !ui.sigMin;
+    requestAnimationFrame(placeFixBanner);   // after the text below is updated
     if (!on) return;
     const who = signatureSummary();
     banner.classList.toggle('acked', !!ui.sigAck);
@@ -213,6 +214,14 @@
       ? 'The signature will be invalid in the file you download. Undo all changes to keep the original signed file.'
       : 'Any change — annotations, page edits or text edits — will invalidate the signature.') + (who ? ' (' + who + ')' : '');
   }
+  /** phones: the "Fix all" banner sits below the signed-PDF banner (or the Signed chip) instead of on top of it */
+  function placeFixBanner() {
+    const bn = document.querySelector('.fix-banner'); if (!bn) return;
+    const sb = [$('#signedBanner'), $('#signedChip')].find((e) => e && !e.hidden && e.offsetHeight);
+    const par = bn.offsetParent;
+    bn.style.top = sb && par ? Math.round(sb.getBoundingClientRect().bottom - par.getBoundingClientRect().top + 8) + 'px' : '';
+  }
+  window.addEventListener('resize', placeFixBanner);
   $('#signedBannerClose').addEventListener('click', () => { ui.sigMin = true; renderSigNotice(); $('#signedChip').focus(); });
   $('#signedChip').addEventListener('click', () => { ui.sigMin = false; renderSigNotice(); });
   const signedDialog = $('#signedDialog');
@@ -1168,6 +1177,7 @@
     if (n) toast(`Lined up ${sel.length} left edges`, 'ok');
   }
   async function fixBullets(ids) {
+    if (!sigGate(() => fixBullets(ids))) return;   // signed PDF: same confirmation as every other edit
     const data = lineData(); if (!data) return;
     const moves = ids.map((id) => data.lines.find((l) => l.id === id)).filter((l) => l && l.strayBullet).map((l) => ({ id: l.id, dx: 0, dy: l.strayBullet.dy }));
     if (!moves.length) return;
@@ -1658,8 +1668,11 @@
       if (p.ok && p.flowInfo) renderFlowMini(f, p, box, line);
     }
     if (p.uncertain) {
-      const u = line('add-uncertain', (p.notes && p.notes[0]) || 'The column edges are a guess.');
-      u.appendChild(document.createTextNode(isPhone() ? ' Drag the orange edges on the page if the column looks wrong.' : ' Drag the orange edges on the page to fix the column, then check the outlines.'));
+      if (isPhone()) line('add-uncertain', 'The column edges are a guess — drag the orange edges on the page if lines below move wrongly.');
+      else {
+        const u = line('add-uncertain', (p.notes && p.notes[0]) || 'The column edges are a guess.');
+        u.appendChild(document.createTextNode(' Drag the orange edges on the page to fix the column, then check the outlines.'));
+      }
       (p.notes || []).slice(1).forEach((n) => line('add-note', n));
     } else (p.notes || []).forEach((n) => line('add-note', n));
     if (p.ok && p.fit) line('add-note', `Kept on one page: tightens ${p.fit.gaps} gap${p.fit.gaps === 1 ? '' : 's'} by up to ${p.fit.gap} pt (${p.fit.total} pt in all${p.fit.paraGaps ? ', paragraph gaps first' : ''}; never below 90%, font size unchanged).`);
@@ -1700,6 +1713,7 @@
       });
     }).catch((err) => console.warn(err));
   }
+  let svgSeq = 0;
   function drawAddPreview(pg, fo) {
     const f = fo || ui.addFlow; if (!f || f.pageId !== pg.id || !f.plan || !f.plan.preview) return;
     const p = f.plan, pr = p.preview, z = ui.zoom, ds = E.displaySize(pg);
@@ -1711,7 +1725,29 @@
       svg('rect', { class: 'rf-moved', x: b.x - 1 / z, y: b.y - 1 / z, width: b.w + 2 / z, height: Math.max(b.h, 1 / z) + 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g);
       svg('rect', { class: 'rf-ghost', x: b.x - 1 / z, y: b.y + pr.ddy - 1 / z, width: b.w + 2 / z, height: Math.max(b.h, 1 / z) + 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g);
     });
-    pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: b.h + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
+    if (isPhone() && pr.added.length) {
+      // phones: one band per new line, as tall as a real line (the line pitch the new text is added with), so the
+      // slot doesn't spill onto the line above or below
+      const ys = [...new Set(pr.added.map((b) => b.y.toFixed(1)))].sort((m, n) => m - n), rows = ys.length || 1;
+      const hMax = Math.max(...pr.added.map((b) => b.h));
+      const ddy = Math.abs(pr.ddy || 0), pitch = ddy / rows;
+      const yCut = pr.moved.length ? Math.min(...pr.moved.map((b) => b.y)) - 1 : null;
+      const cv = document.getElementById('pageCanvas');
+      if (yCut != null && pitch >= hMax * 0.8 && pitch <= hMax * 3 && cv && cv.width) {
+        // show the lines below already moved down: cover the column from the first moved line and redraw it ddy lower
+        // (a copy of the rendered page, clipped to the column), so the green slot opens a real gap instead of overlapping
+        if (!f.shot || f.shot.w !== cv.width || f.shot.z !== z) f.shot = { w: cv.width, z, url: cv.toDataURL('image/png') };
+        const x0 = Math.max(0, R.x0 - 2), x1 = Math.min(ds.w, R.x1 + 2), cid = 'rfclip' + (++svgSeq);
+        const cp = svg('clipPath', { id: cid }, svg('defs', {}, g));
+        svg('rect', { x: x0, y: yCut + ddy, width: x1 - x0, height: Math.max(0, yBot - yCut - ddy) }, cp);
+        svg('rect', { class: 'rf-cover', x: x0, y: yCut, width: x1 - x0, height: Math.max(0, yBot - yCut), fill: '#fff', 'pointer-events': 'none' }, g);
+        svg('image', { href: f.shot.url, x: 0, y: ddy, width: ds.w, height: ds.h, preserveAspectRatio: 'none', 'clip-path': `url(#${cid})`, 'pointer-events': 'none' }, g);
+        pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 2 / z, y: yCut + ys.indexOf(b.y.toFixed(1)) * pitch, width: b.w + 4 / z, height: pitch, rx: 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g));
+      } else {
+        const lh = pitch >= hMax * 0.9 && pitch <= hMax * 2 ? pitch : hMax * 1.2;
+        pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 2 / z, y: b.y + b.h / 2 - lh / 2, width: b.w + 4 / z, height: lh, rx: 2 / z, 'stroke-width': 1 / z, 'pointer-events': 'none' }, g));
+      }
+    } else pr.added.forEach((b) => svg('rect', { class: 'rf-added', x: b.x - 1.5 / z, y: b.y - 1.5 / z, width: b.w + 3 / z, height: b.h + 3 / z, rx: 2 / z, 'stroke-width': 1.5 / z, 'pointer-events': 'none' }, g));
     if (p.ok && p.flowInfo && p.flowInfo.out.length) {
       // what carries on to the next page / column: outlined in orange with a "→ page N" tag
       const fo = p.flowInfo.out;
@@ -2138,7 +2174,7 @@
             bn.querySelector('span').textContent = stray.length === 1 ? '1 bullet looks misaligned' : `${stray.length} bullets look misaligned`;
             const go = document.createElement('button'); go.type = 'button'; go.className = 'btn btn-primary fix-banner-go'; go.textContent = stray.length === 1 ? 'Fix' : 'Fix all';
             go.addEventListener('click', () => fixBullets(stray.map((l) => l.id)));
-            bn.appendChild(go); $('.work').appendChild(bn);
+            bn.appendChild(go); $('.work').appendChild(bn); placeFixBanner();
           } else {
             const fb = propBtn('i-check', stray.length === 1 ? 'Fix bullet position' : `Fix all bullets (${stray.length})`, () => fixBullets(stray.map((l) => l.id)));
             fb.classList.add('fix-bullets'); inner.appendChild(fb);
