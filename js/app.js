@@ -1949,10 +1949,12 @@
     const trig = tbBtn('i-more', 'More options', null, 'hdr-more'); trig.id = 'hdrMoreBtn';
     const wrap = popover('hdrmore', trig, (pop) => {
       pop.classList.add('tb-menu', 'hdr-menu'); pop.setAttribute('aria-label', 'More options');
-      [['i-search', 'Find & replace', '#findBtn'], ['i-compress', 'Compress PDF', '#compressBtn'], ['i-moon', 'Dark / light theme', '.ed-top .theme-toggle']].forEach(([ic, t, sel]) => {
+      [['i-wand', 'Rebuild as resume', '#rzEdBtn'], ['i-search', 'Find & replace', '#findBtn'], ['i-compress', 'Compress PDF', '#compressBtn'], ['i-moon', 'Dark / light theme', '.ed-top .theme-toggle']].forEach(([ic, t, sel]) => {
         pop.appendChild(menuItem(ic, t, '', () => { closePops(); const b = $(sel); if (b) b.click(); }));
       });
     });
+    // Rebuild as resume is only offered once the resume module has added its top-bar button
+    trig.addEventListener('click', () => { const it = wrap.querySelector('.tb-item'); if (it) it.hidden = !$('#rzEdBtn'); });
     wrap.classList.add('hdr-more-wrap');
     sheetify(wrap.querySelector('.tb-pop'), phoneUI);
     dl.parentNode.insertBefore(wrap, dl);

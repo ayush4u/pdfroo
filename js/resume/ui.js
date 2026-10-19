@@ -428,6 +428,10 @@
     toast('Saved ' + name, 'ok');
   }
 
+  function wandIcon() {   // "rebuild" action: a magic wand (sprite i-wand), not a document badge
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('class', 'i'); s.setAttribute('aria-hidden', 'true');
+    s.innerHTML = '<use href="#i-wand"/>'; return s;
+  }
   function docIcon() {   // inline SVG document icon, 16 px, stroke = currentColor
     const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg');
     for (const [k, v] of Object.entries({ width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'rz-ed-ic' })) svg.setAttribute(k, v);
@@ -447,7 +451,7 @@
         const A = root.PdfrooApp, src = A.currentSrc && A.currentSrc(); const bytes = src != null && root.PdfEngine.getSourceBytes(src);
         if (S.detected && S.detected.d.src === src) { showCard(S.detected.out, S.detected.d); return; }
         if (bytes) fromBytes(new Uint8Array(bytes), A.docName ? A.docName() : 'resume.pdf', src);
-      } }, docIcon(), h('span', { class: 'rz-ed-lbl' }, 'Rebuild as resume'), h('span', { class: 'rz-ed-short' }, 'Resume'));
+      } }, wandIcon(), h('span', { class: 'rz-ed-lbl' }, 'Rebuild as resume'), h('span', { class: 'rz-ed-short' }, 'Resume'));
       acts.insertBefore(b, acts.firstChild);
     }
     document.addEventListener('pdfroo:opened', onOpened);
