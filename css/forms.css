@@ -1,0 +1,43 @@
+/* Form filler (js/tools/forms.js): full-screen, phone-first, editor's orange accent */
+html.ff-lock, html.ff-lock body { overflow: hidden; }
+.ff-shell { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; background: var(--surface-2, #f3f3f3); color: var(--text, #1d1d1f); }
+.ff-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; padding-top: max(8px, env(safe-area-inset-top)); background: var(--surface, #fff); border-bottom: 1px solid var(--surface-3, #ddd); }
+.ff-title { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; }
+.ff-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ff-count { font-size: .85rem; opacity: .75; }
+.ff-x, .ff-nav { min-width: 44px; min-height: 44px; }
+.ff-flat { display: flex; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; white-space: nowrap; }
+.ff-flat input { width: 22px; height: 22px; accent-color: var(--primary, #f26b1d); }
+.ff-dl { min-height: 44px; }
+.ff-pages { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.ff-page { position: relative; width: min(100%, 900px); background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); flex: none; }
+.ff-page canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ff-layer { position: absolute; inset: 0; }
+.ff-f { position: absolute; box-sizing: border-box; margin: 0; padding: 0 3px; border: 1px solid rgba(242,107,29,.55); border-radius: 2px; background: rgba(255,214,170,.28); color: #111; font: var(--fs, 12px)/1.15 Helvetica, Arial, sans-serif; }
+.ff-f:focus { outline: 2px solid var(--primary, #f26b1d); outline-offset: 1px; background: rgba(255,255,255,.95); z-index: 2; }
+.ff-textarea { resize: none; padding-top: 2px; }
+.ff-checkbox, .ff-radio { appearance: auto; accent-color: var(--primary, #f26b1d); padding: 0; background: transparent; border: 0; }
+.ff-f:disabled { background: rgba(0,0,0,.04); border-style: dashed; }
+.ff-msg { margin: 0; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); min-height: 1.2em; background: var(--surface, #fff); }
+.ff-msg:empty { display: none; }
+.ff-msg.bad { color: #b42318; }
+.ff-notice .ff-msg { padding: 24px 16px; }
+@media (pointer: coarse) {
+  /* small boxes on a phone: keep a 44px tap area without moving the box */
+  .ff-checkbox, .ff-radio { min-width: 0; }
+  .ff-checkbox::after, .ff-radio::after { content: ''; position: absolute; inset: -12px; }
+}
+@media (max-width: 600px) {
+  .ff-pages { padding: 6px; }
+  .ff-bar { gap: 6px; }
+  .ff-bar .ff-title { flex: 1 1 0; }
+  .ff-bar .ff-dl { order: 1; }
+  .ff-bar .ff-nav { order: 2; flex: 1; padding: 0 8px; }
+  .ff-bar .ff-flat { order: 3; }
+  .ff-bar::after { content: ''; order: 1; flex-basis: 100%; height: 0; }
+}
+.ff-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1001; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--surface, #fff); box-shadow: 0 -2px 12px rgba(0,0,0,.2); display: flex; flex-direction: column; gap: 8px; }
+.ff-sheet-label { font-size: .85rem; opacity: .75; text-transform: capitalize; }
+.ff-sheet-in { width: 100%; box-sizing: border-box; min-height: 48px; font: 16px/1.3 inherit; padding: 10px 12px; border: 1.5px solid var(--primary, #f26b1d); border-radius: 10px; }
+textarea.ff-sheet-in { min-height: 96px; }
+.ff-sheet-row { display: flex; gap: 8px; } .ff-sheet-row .btn { flex: 1; }
