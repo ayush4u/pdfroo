@@ -26,34 +26,35 @@
     return view;
   }
   function show(screen) {
-    ensureView(); view.hidden = false; document.body.classList.add('rz-open'); S.screen = screen;
+    ensureView(); view.hidden = false; document.body.classList.add('rz-open'); S.screen = screen; if (root.PdfrooNav) root.PdfrooNav.open('resume', () => closeView(true));
     const main = $('#rzMain'); main.innerHTML = ''; main.className = 'rz-main rz-s-' + screen; window.scrollTo(0, 0); return main;
   }
-  function closeView() { if (view) view.hidden = true; document.body.classList.remove('rz-open'); S.screen = null; }
+  function closeView(fromBack) { if (view) view.hidden = true; document.body.classList.remove('rz-open'); S.screen = null; if (!fromBack && root.PdfrooNav) root.PdfrooNav.done('resume'); }
 
   /* ---------- home chooser ---------- */
   function openChooser() {
     const saved = M.load();
-    const input = h('input', { type: 'file', accept: 'application/pdf,.pdf', hidden: true, onchange: () => { const f = input.files[0]; input.value = ''; if (f) { close(); fromFile(f); } } });
+    const input = h('input', { type: 'file', accept: 'application/pdf,.pdf', hidden: true, onchange: () => { const f = input.files[0]; input.value = ''; if (f) { close(true); fromFile(f); } } });
     const drop = h('div', { class: 'rz-drop', role: 'button', tabindex: '0', onclick: () => input.click(), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } } },
       h('div', { class: 'rz-drop-ic' }, '📄'), h('strong', null, 'Drop your old resume here'), h('span', null, 'or tap to upload a PDF · read on your device'));
     drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });
     drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
-    drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) { close(); fromFile(f); } });
+    drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) { close(true); fromFile(f); } });
     const dlg = h('div', { class: 'rz-scrim', id: 'rzChooser', onclick: (e) => { if (e.target === dlg) close(); } },
       h('div', { class: 'rz-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'rzChooserT' },
         h('span', { class: 'rz-chip' }, 'Resume · free'),
         h('h2', { id: 'rzChooserT' }, 'Make a clean, ATS-friendly resume'),
         h('p', { class: 'rz-sub' }, 'Bring your old resume and we’ll pour it into a fresh template, or start from a blank one.'),
         drop, input,
-        h('button', { class: 'rz-option', type: 'button', onclick: () => { close(); startBlank(); } }, h('b', null, '✨ Start from scratch'), h('span', null, 'A blank template with the usual sections')),
-        saved && saved.basics.name ? h('button', { class: 'rz-option', type: 'button', onclick: () => { close(); S.R = saved; S.photo = photoFromModel(saved); S.conf = {}; editorScreen(); } }, h('b', null, '↺ Continue ' + saved.basics.name + '’s resume'), h('span', null, 'Saved on this device')) : null,
+        h('button', { class: 'rz-option', type: 'button', onclick: () => { close(true); startBlank(); } }, h('b', null, '✨ Start from scratch'), h('span', null, 'A blank template with the usual sections')),
+        saved && saved.basics.name ? h('button', { class: 'rz-option', type: 'button', onclick: () => { close(true); S.R = saved; S.photo = photoFromModel(saved); S.conf = {}; editorScreen(); } }, h('b', null, '↺ Continue ' + saved.basics.name + '’s resume'), h('span', null, 'Saved on this device')) : null,
         h('div', { class: 'rz-row' }, h('button', { class: 'rz-btn', type: 'button', onclick: close }, 'Cancel')),
         h('p', { class: 'rz-fine' }, '🔒︎ Read on your device. Nothing is uploaded.')));
-    function close() { dlg.remove(); document.removeEventListener('keydown', esc); }
+    function close(next) { if (!dlg.isConnected) return; dlg.remove(); document.removeEventListener('keydown', esc); if (root.PdfrooNav) root.PdfrooNav.done('rzchooser', next === true); }
     function esc(e) { if (e.key === 'Escape') close(); }
     document.addEventListener('keydown', esc);
     document.body.appendChild(dlg); drop.focus();
+    if (root.PdfrooNav) root.PdfrooNav.open('rzchooser', () => close());
   }
   function startBlank() { S.R = M.blank(); S.photo = null; S.lowAll = false; S.conf = {}; S.srcBytes = null; editorScreen(); }
   async function fromFile(f) {
@@ -455,7 +456,6 @@
       acts.insertBefore(b, acts.firstChild);
     }
     document.addEventListener('pdfroo:opened', onOpened);
-    addEventListener('popstate', () => { if (S.screen) closeView(); });
   }
   root.ResumeUI = { openChooser, fromBytes, startBlank, checkScreen, editorScreen, atsScreen, atswScreen, state: S, showCard };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();

@@ -7,10 +7,10 @@ const srv = http.createServer((q, s) => { const f = path.join(ROOT, decodeURICom
 await new Promise((res) => srv.listen(0, '127.0.0.1', res)); const PORT = srv.address().port, BASE = `http://127.0.0.1:${PORT}/`;
 const r = []; const ok = (n, c, i = '') => { r.push(`${c ? 'PASS' : 'FAIL'}  ${n}${i !== '' ? '  (' + i + ')' : ''}`); };
 const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome' });
-const errs = [], reqs = [];
+const errs = [], reqs = [], dialogs = [];
 async function page(mobile) {
   const ctx = await b.newContext(mobile ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, acceptDownloads: true } : { viewport: { width: 1280, height: 800 }, acceptDownloads: true });
-  const p = await ctx.newPage(); p.on('pageerror', (e) => errs.push(e.message));
+  const p = await ctx.newPage(); p.on('pageerror', (e) => errs.push(e.message)); p.on('dialog', (d) => { dialogs.push(d.message()); (p.__dismiss ? d.dismiss() : d.accept()); });
   p.on('request', (q) => { if (!q.url().startsWith(BASE) && !q.url().startsWith('blob:') && !q.url().startsWith('data:')) reqs.push(q.url()); });
   await p.goto(BASE + 'index.html'); await p.waitForFunction(() => window.PdfrooForms && window.pdfjsLib);
   return p;
@@ -57,7 +57,21 @@ await p.uncheck('[aria-label="agree"]'); await p.check('#ffFlat');
 d = await download(p);
 const t = await pageText(p, d.bytes);
 ok('13 Lock answers: no fields left, text is on the page', (await fieldCount(p, d.bytes)) === 0 && t.includes('Ayush Tomar') && t.includes('Uttar Pradesh') && t.includes('09/10/2026'), d.name);
-await p.click('.ff-x'); ok('15 Close removes the filler and unlocks scrolling', !(await p.$('.ff-shell')) && !(await p.evaluate(() => document.documentElement.classList.contains('ff-lock'))));
+await p.click('.ff-x'); await p.waitForTimeout(150); ok('15 Close removes the filler and unlocks scrolling', !(await p.$('.ff-shell')) && !(await p.evaluate(() => document.documentElement.classList.contains('ff-lock'))));
+
+/* ---- Back button ---- */
+await openForm(p, 'all-types.pdf');
+await p.goBack(); await p.waitForTimeout(200);
+ok('47 Back closes the filler and stays on Pdfroo', !(await p.$('.ff-shell')) && p.url().endsWith('/index.html'), p.url());
+await openForm(p, 'all-types.pdf'); await p.fill('[aria-label="full name"]', 'X');
+p.__dismiss = true; const nd = dialogs.length; await p.goBack(); await p.waitForTimeout(200);
+ok('48 Back with unsaved answers asks first; Cancel keeps the form', dialogs.length === nd + 1 && !!(await p.$('.ff-shell')) && (await p.inputValue('[aria-label="full name"]')) === 'X');
+p.__dismiss = false; await p.goBack(); await p.waitForTimeout(200);
+ok('49 Back again + OK closes it, still on Pdfroo', !(await p.$('.ff-shell')) && p.url().endsWith('/index.html'));
+await openForm(p, 'all-types.pdf'); await p.click('.ff-x'); await p.waitForTimeout(200);
+await p.goBack().catch(() => {}); await p.waitForTimeout(200);
+ok('50 ✕ then Back does not need two presses (no leftover history entry)', !p.url().endsWith('/index.html') || (await p.evaluate(() => !(history.state && history.state.pdfrooForm))));
+await p.goto(BASE + 'index.html'); await p.waitForFunction(() => window.PdfrooForms && window.pdfjsLib);
 
 /* ---- API round-trips ---- */
 const api = await p.evaluate(async () => {
@@ -89,7 +103,7 @@ const w9b = await p.evaluate(async (a) => { const f = (await PDFLib.PDFDocument.
 ok('22 W-9 answer saved and box ticked', w9b.texts.includes('Ayush Tomar') && w9b.checks >= 1, nm);
 await p.check('#ffFlat'); d = await download(p);
 ok('23 W-9 Lock answers', (await pageText(p, d.bytes)).includes('Ayush Tomar') && (await fieldCount(p, d.bytes)) === 0);
-await p.click('.ff-x');
+await p.click('.ff-x'); await p.waitForTimeout(150);
 
 /* ---- radio heavy ---- */
 await openForm(p, 'radio-heavy.pdf');
@@ -98,7 +112,7 @@ const radioCnt = await p.textContent('.ff-count');
 d = await download(p); v = await readBack(p, d.bytes);
 const rbad = []; for (let i = 1; i <= 25; i++) if (v['q' + i] !== (i % 2 ? 'Yes' : 'No')) rbad.push('q' + i + '=' + v['q' + i]);
 ok('24 25 yes/no questions saved', !rbad.length, rbad.slice(0, 4).join(' ') || radioCnt);
-await p.click('.ff-x');
+await p.click('.ff-x'); await p.waitForTimeout(150);
 
 /* ---- signed form ---- */
 await openForm(p, 'signed-form.pdf');
@@ -108,19 +122,19 @@ let gotDl = false; p.once('download', () => { gotDl = true; }); await p.click('.
 ok('38 Signed form: first Download only warns, nothing saved', !gotDl && (await p.textContent('.ff-dl')) === 'Download anyway' && /break the digital signature/.test(await p.textContent('.ff-msg')));
 d = await download(p); v = await readBack(p, d.bytes);
 ok('39 Signed form: "Download anyway" saves', v.full_name === 'Ayush');
-await p.click('.ff-x');
+await p.click('.ff-x'); await p.waitForTimeout(150);
 await openForm(p, 'all-types.pdf');
 ok('40 Unsigned form: no signature warning', !(await p.$('.ff-sig')));
-await p.click('.ff-x');
+await p.click('.ff-x'); await p.waitForTimeout(150);
 
 /* ---- no fields / not a pdf ---- */
 await openForm(p, 'no-fields.pdf');
 ok('25 PDF with no fields: clear message', /no fillable fields/.test(await p.textContent('.ff-shell')));
-await p.click('.ff-x');
+await p.click('.ff-x'); await p.waitForTimeout(150);
 fs.writeFileSync('/tmp/notpdf.pdf', 'hello');
 { const [fc] = await Promise.all([p.waitForEvent('filechooser'), p.click('#landingFormBtn')]); await fc.setFiles('/tmp/notpdf.pdf'); await p.waitForSelector('.ff-shell'); }
 ok('26 Not a PDF: clear message', /doesn’t look like a PDF/.test(await p.textContent('.ff-shell')));
-await p.click('.ff-x');
+await p.click('.ff-x'); await p.waitForTimeout(150);
 
 /* ---- phone ---- */
 const m = await page(true);

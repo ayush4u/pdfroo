@@ -275,10 +275,11 @@
   }
   let dlg;
   function open(title, body) {
-    if (!dlg) { dlg = el('dialog', { class: 'dialog pt-dialog', 'aria-labelledby': 'ptTitle' }); document.body.append(dlg); dlg.addEventListener('close', () => { if (!dlg.open) dlg.replaceChildren(); }); }   // 'close' fires later; don't wipe a dialog reopened meanwhile
+    if (!dlg) { dlg = el('dialog', { class: 'dialog pt-dialog', 'aria-labelledby': 'ptTitle' }); document.body.append(dlg); dlg.addEventListener('close', () => { if (!dlg.open) { dlg.replaceChildren(); if (window.PdfrooNav) PdfrooNav.done('tool'); } }); }   // 'close' fires later; don't wipe a dialog reopened meanwhile
     const close = el('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close', onclick: () => dlg.close() }, '✕');
     dlg.replaceChildren(el('div', { class: 'dialog-inner pt-inner' }, el('div', { class: 'dialog-head pt-head' }, el('h2', { id: 'ptTitle' }, title), close), body));
     if (!dlg.open) dlg.showModal();
+    if (window.PdfrooNav) PdfrooNav.open('tool', () => { if (dlg.open) dlg.close(); });
   }
   const msg = () => el('p', { class: 'pt-msg', role: 'status', 'aria-live': 'polite' });
 

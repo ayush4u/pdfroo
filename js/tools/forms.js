@@ -128,8 +128,21 @@
   const loadFont = async () => {
     return new Uint8Array(await (await fetch(FONT_URL)).arrayBuffer());
   };
-  let shell = null;
-  function close() { if (shell) { shell.remove(); shell = null; document.documentElement.classList.remove('ff-lock'); } }
+  let shell = null, onClose = null, dirty = false;
+  // Phone Back closes the filler instead of leaving Pdfroo: one history entry while it's open.
+  function teardown() { if (shell) { shell.remove(); shell = null; document.documentElement.classList.remove('ff-lock'); if (onClose) { const f = onClose; onClose = null; f(); } } }
+  function close() { if (history.state && history.state.pdfrooForm) history.back(); else teardown(); }
+  const LEAVE = 'Close the form? Answers you haven’t downloaded will be lost.';
+  addEventListener('popstate', () => {
+    if (!shell) return;
+    if (dirty && !confirm(LEAVE)) { try { history.pushState({ pdfrooForm: 1 }, '', location.href); } catch (e) {} return; }
+    teardown();
+  });
+  function openShell(node) {
+    if (shell) teardown();
+    shell = node; dirty = false; document.body.append(node);
+    if (!(history.state && history.state.pdfrooForm)) { try { history.pushState({ pdfrooForm: 1 }, '', location.href); } catch (e) {} }
+  }
 
   async function openFile(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -158,13 +171,13 @@
       download.disabled = true; msg.className = 'ff-msg'; msg.textContent = 'Saving…';
       try {
         const r = await fillPdf(bytes, vals, { flatten: flat.checked, loadFont: loadFont });
-        save(r.bytes, baseName(file.name) + (flat.checked ? '-filled-locked' : '-filled') + '.pdf');
+        dirty = false; save(r.bytes, baseName(file.name) + (flat.checked ? '-filled-locked' : '-filled') + '.pdf');
         msg.textContent = 'Downloaded' + (flat.checked ? ', answers locked in.' : '. It’s still a fillable form.') + (r.skipped.length ? ' ' + r.skipped.length + ' field(s) couldn’t be saved: ' + r.skipped.slice(0, 3).join(', ') : '');
       } catch (e) { msg.className = 'ff-msg bad'; msg.textContent = e.message || String(e); }
       finally { download.disabled = false; }
     } }, 'Download');
     const bar = el('div', { class: 'ff-bar' },
-      el('button', { type: 'button', class: 'icon-btn ff-x', 'aria-label': 'Close form', onclick: () => { pdf.destroy(); close(); } }, '✕'),
+      el('button', { type: 'button', class: 'icon-btn ff-x', 'aria-label': 'Close form', onclick: () => { if (dirty && !confirm(LEAVE)) return; dirty = false; close(); } }, '✕'),
       el('div', { class: 'ff-title' }, el('b', null, file.name), status),
       el('button', { type: 'button', class: 'btn ff-nav', onclick: () => focusField(cur - 1), 'aria-label': 'Previous field' }, '‹ Prev'),
       el('button', { type: 'button', class: 'btn ff-nav', onclick: () => focusField(cur + 1), 'aria-label': 'Next field' }, 'Next ›'),
@@ -172,10 +185,10 @@
       download);
     const scroller = el('div', { class: 'ff-pages' });
     const sig = signed ? el('p', { class: 'ff-sig', role: 'note' }, 'This PDF is digitally signed. You can fill it in, but saving your answers will break the signature, so the person who signed it may need to sign again.') : null;
-    close(); shell = el('div', { class: 'ff-shell', role: 'dialog', 'aria-label': 'Fill in form' }, bar, sig, scroller, msg);
-    document.body.append(shell); document.documentElement.classList.add('ff-lock');
+    openShell(el('div', { class: 'ff-shell', role: 'dialog', 'aria-label': 'Fill in form' }, bar, sig, scroller, msg));
+    document.documentElement.classList.add('ff-lock'); onClose = () => pdf.destroy();
 
-    const set = (name, v) => { vals[name] = v; (inputs.get(name) || []).forEach((e) => syncEl(e, v)); upd(); };
+    const set = (name, v) => { vals[name] = v; dirty = true; (inputs.get(name) || []).forEach((e) => syncEl(e, v)); upd(); };
     const syncEl = (e, v) => {
       if (e.type === 'checkbox') e.checked = !!v;
       else if (e.type === 'radio') e.checked = e.value === v;
@@ -261,10 +274,9 @@
     await pg.render({ canvasContext: cv.getContext('2d'), viewport: vp, annotationMode: AM ? AM.DISABLE : undefined }).promise;
   }
   function notice(text) {
-    close(); shell = el('div', { class: 'ff-shell ff-notice', role: 'dialog', 'aria-label': 'Fill in form' },
+    openShell(el('div', { class: 'ff-shell ff-notice', role: 'dialog', 'aria-label': 'Fill in form' },
       el('div', { class: 'ff-bar' }, el('button', { type: 'button', class: 'icon-btn ff-x', 'aria-label': 'Close', onclick: close }, '✕'), el('div', { class: 'ff-title' }, el('b', null, 'Fill in a form'))),
-      el('p', { class: 'ff-msg bad' }, text));
-    document.body.append(shell);
+      el('p', { class: 'ff-msg bad' }, text)));
   }
   async function flow() { const f = await pick(); if (f) await openFile(f); }
   root.PdfrooForms.open = openFile;

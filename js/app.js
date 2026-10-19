@@ -157,9 +157,11 @@
 
   async function openFile(f) {
     if (!isPdf(f)) { toast('That doesn’t look like a PDF', 'error'); return; }
+    // push the editor's history entry as soon as the screen opens, not after loading, so an early Back stays on Pdfroo
+    if (editor.hidden && !(history.state && history.state.pdfrooEditor)) { try { history.pushState({ pdfrooEditor: 1 }, '', location.href); } catch (e) { /* file:// */ } }
     busy(true, 'Opening ' + f.name + '…');
     try { await openPdf(new Uint8Array(await readFile(f)), f.name); }
-    catch (e) { if (!e.userFacing) console.error(e); toast(e.message || 'Could not open this PDF', 'error'); }
+    catch (e) { if (!e.userFacing) console.error(e); toast(e.message || 'Could not open this PDF', 'error'); if (editor.hidden && history.state && history.state.pdfrooEditor) history.back(); }
     finally { busy(false); }
   }
 
