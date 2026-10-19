@@ -49,6 +49,16 @@
   const SELF = typeof document !== 'undefined' && document.currentScript ? document.currentScript.src : '';
   const BASE = SELF ? SELF.replace(/js\/tools\/forms\.js.*$/, '') : '';
   function ensureFontkit() { return root.fontkit ? Promise.resolve() : new Promise((res, rej) => { const t = document.createElement('script'); t.src = BASE + 'vendor/fontkit.umd.min.js'; t.onload = res; t.onerror = rej; document.head.append(t); }); }
+  /** True if the file carries a real digital signature (a /Sig field with a value) or a DocMDP certification.
+   *  pdf-lib rewrites the whole file on save, so any change breaks those. */
+  function isSigned(libDoc) {
+    try {
+      const N = (n) => L().PDFName.of(n);
+      // /Perms /UR3 (Reader usage rights, common on government forms) is not a signature anyone cares about; DocMDP is
+      const perms = libDoc.catalog.lookup(N('Perms')); if (perms && perms.get && perms.get(N('DocMDP'))) return true;
+      return libDoc.getForm().getFields().some((f) => { const d = f.acroField.dict, ft = d.get(N('FT')); return ft && String(ft) === '/Sig' && !!d.get(N('V')); });
+    } catch (e) { return false; }
+  }
   function pdfjsLibRect(r) { return [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])]; }
   function initial(a) {
     if (a.fieldType === 'Btn') return a.checkBox ? (a.fieldValue && a.fieldValue !== 'Off' && a.fieldValue === a.exportValue) : (a.fieldValue && a.fieldValue !== 'Off' ? a.fieldValue : '');
@@ -105,7 +115,7 @@
   }
   function baseName(name) { return String(name || 'form').replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]+/g, '_') || 'form'; }
 
-  root.PdfrooForms = { readFields, mapRadios, fillPdf, readBack, baseName };
+  root.PdfrooForms = { readFields, mapRadios, isSigned, fillPdf, readBack, baseName };
   if (typeof document === 'undefined') return;
 
   /* ---------- UI: full-screen filler, fields drawn on top of the real pages ---------- */
@@ -129,7 +139,8 @@
     const { pages, fields } = await readFields(pdf);
     await mapRadios(bytes, fields);
     if (!fields.size) { await pdf.destroy(); return notice('This PDF has no fillable fields. To type on it anyway, open it in the editor and use Text.'); }
-    try { await L().PDFDocument.load(bytes); } catch (e) { await pdf.destroy(); return notice('This form is locked against changes, so it can’t be filled here.'); }
+    let signed = false;
+    try { signed = isSigned(await L().PDFDocument.load(bytes, { updateMetadata: false })); } catch (e) { await pdf.destroy(); return notice('This form is locked against changes, so it can’t be filled here.'); }
 
     const vals = {}; fields.forEach((f, n) => { vals[n] = f.value; });
     const order = [...fields.values()].filter((f) => !f.readOnly);
@@ -141,7 +152,9 @@
     const inputs = new Map(); // name -> [elements]
     let cur = -1;
     const focusField = (i) => { if (!order.length) return; cur = (i + order.length) % order.length; const e = (inputs.get(order[cur].name) || [])[0]; if (e) { e.scrollIntoView({ block: 'center' }); e.focus({ preventScroll: true }); } };
+    let armed = !signed;
     const download = el('button', { type: 'button', class: 'btn btn-primary ff-dl', onclick: async () => {
+      if (!armed) { armed = true; download.textContent = 'Download anyway'; download.classList.add('ff-danger'); msg.className = 'ff-msg warn'; msg.textContent = 'Saving will break the digital signature on this PDF. Tap “Download anyway” to go ahead.'; return; }
       download.disabled = true; msg.className = 'ff-msg'; msg.textContent = 'Saving…';
       try {
         const r = await fillPdf(bytes, vals, { flatten: flat.checked, loadFont: loadFont });
@@ -158,7 +171,8 @@
       el('label', { class: 'ff-flat', for: 'ffFlat', title: 'Turns the answers into plain page content, so they can’t be changed' }, flat, ' Lock answers'),
       download);
     const scroller = el('div', { class: 'ff-pages' });
-    close(); shell = el('div', { class: 'ff-shell', role: 'dialog', 'aria-label': 'Fill in form' }, bar, scroller, msg);
+    const sig = signed ? el('p', { class: 'ff-sig', role: 'note' }, 'This PDF is digitally signed. You can fill it in, but saving your answers will break the signature, so the person who signed it may need to sign again.') : null;
+    close(); shell = el('div', { class: 'ff-shell', role: 'dialog', 'aria-label': 'Fill in form' }, bar, sig, scroller, msg);
     document.body.append(shell); document.documentElement.classList.add('ff-lock');
 
     const set = (name, v) => { vals[name] = v; (inputs.get(name) || []).forEach((e) => syncEl(e, v)); upd(); };

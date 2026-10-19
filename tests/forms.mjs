@@ -100,6 +100,19 @@ const rbad = []; for (let i = 1; i <= 25; i++) if (v['q' + i] !== (i % 2 ? 'Yes'
 ok('24 25 yes/no questions saved', !rbad.length, rbad.slice(0, 4).join(' ') || radioCnt);
 await p.click('.ff-x');
 
+/* ---- signed form ---- */
+await openForm(p, 'signed-form.pdf');
+ok('37 Signed form: warning shown above the pages', /digitally signed/.test(await p.textContent('.ff-sig')));
+await p.fill('[aria-label="full name"]', 'Ayush');
+let gotDl = false; p.once('download', () => { gotDl = true; }); await p.click('.ff-dl'); await p.waitForTimeout(400);
+ok('38 Signed form: first Download only warns, nothing saved', !gotDl && (await p.textContent('.ff-dl')) === 'Download anyway' && /break the digital signature/.test(await p.textContent('.ff-msg')));
+d = await download(p); v = await readBack(p, d.bytes);
+ok('39 Signed form: "Download anyway" saves', v.full_name === 'Ayush');
+await p.click('.ff-x');
+await openForm(p, 'all-types.pdf');
+ok('40 Unsigned form: no signature warning', !(await p.$('.ff-sig')));
+await p.click('.ff-x');
+
 /* ---- no fields / not a pdf ---- */
 await openForm(p, 'no-fields.pdf');
 ok('25 PDF with no fields: clear message', /no fillable fields/.test(await p.textContent('.ff-shell')));

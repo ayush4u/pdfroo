@@ -30,5 +30,12 @@ const { PDFDocument, StandardFonts } = require('../../vendor/pdf-lib.min.js');
     const d = await PDFDocument.create(), font = await d.embedFont(StandardFonts.Helvetica); d.addPage([595, 842]).drawText('Just a letter, nothing to fill.', { x: 50, y: 780, size: 14, font });
     out('no-fields.pdf', await d.save());
   }
+  { // a form that carries a (structurally real, cryptographically fake) signature: tests the warning only
+    const d = await PDFDocument.load(fs.readFileSync(path.join(__dirname, 'all-types.pdf'))), ctx = d.context, { PDFName, PDFString, PDFHexString } = require('../../vendor/pdf-lib.min.js');
+    const v = ctx.obj({ Type: 'Sig', Filter: 'Adobe.PPKLite', SubFilter: 'adbe.pkcs7.detached', ByteRange: [0, 0, 0, 0], Contents: PDFHexString.of('00'.repeat(64)), Name: PDFString.of('Test Signer') });
+    const page = d.getPage(1), w = ctx.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Sig', T: PDFString.of('Signature1'), V: ctx.register(v), Rect: [40, 600, 240, 640], F: 4, P: page.ref });
+    const wr = ctx.register(w); page.node.addAnnot(wr); d.getForm().acroForm.addField(wr);
+    out('signed-form.pdf', await d.save());
+  }
   console.log('made test forms');
 })();
