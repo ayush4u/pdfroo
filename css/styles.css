@@ -1145,7 +1145,7 @@ body.kb-open .pager { display: none; }
   .propbar-inner { min-height: 52px; }
 }
 /* phones: Rebuild as resume moves into the top bar ⋯ menu (with its label) instead of an unlabeled bordered icon */
-@media (max-width: 640px) { .ed-top #rzEdBtn { display: none; } }
+@media (max-width: 640px) { .ed-top #rzEdBtn.rz-ed-btn { display: none; } }
 #rzEdBtn .i { width: 16px; height: 16px; }
 .hdr-menu .tb-item[hidden] { display: none; }
 /* toasts: one at a time, 44px close target */
