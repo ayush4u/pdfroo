@@ -147,7 +147,7 @@
     R.work.forEach((w, i) => fld('Experience ' + (i + 1), 'work.' + i, () => joinParts(w.position, w.name, RR.range(w.startDate, w.endDate)), (v) => { const p = v.split(/\s*·\s*/); w.position = p[0] || ''; w.name = p[1] || ''; }));
     R.education.forEach((e, i) => fld('Education' + (R.education.length > 1 ? ' ' + (i + 1) : ''), 'education.' + i, () => joinParts([e.studyType, e.area].filter(Boolean).join(' '), e.institution, e.score, RR.range(e.startDate, e.endDate)), (v) => { const p = v.split(/\s*·\s*/); e.studyType = p[0] || ''; e.area = ''; e.institution = p[1] || ''; if (p[2] && !/\d{4}/.test(p[2])) e.score = p[2]; }));
     fld('Skills', 'skills', () => R.skills.map((s) => s.name).join(', '), (v) => { R.skills = v.split(/\s*,\s*/).filter(Boolean).map((n) => ({ name: n })); }, { area: true });
-    (P.custom || []).forEach((c, i) => fld(c.unmapped ? 'Other (we couldn’t place this)' : c.title, 'custom.' + i, () => c.text, (v) => { c.text = v; }, { area: true, forceWeak: !!c.unmapped }));
+    (P.custom || []).forEach((c, i) => fld(c.unmapped ? 'Other (we couldn’t place this)' : c.title, 'custom.' + i, () => c.text, (v) => { c.text = v; }, { area: true, forceWeak: !!c.unmapped, remove: () => { P.custom.splice(P.custom.indexOf(c), 1); M.save(S.R); checkScreen(); } }));
     const nWeak = rows.filter((r) => r.opts.forceWeak || weak(r.key, r.get())).length;
     const form = h('div', { class: 'rz-panel rz-fields' });
     for (const r of rows) {
@@ -156,7 +156,7 @@
       inp.value = r.get() || '';
       inp.addEventListener('input', () => { r.set(inp.value); wrap.classList.remove('weak'); M.save(S.R); });
       const id = 'rzf-' + r.key.replace(/\W/g, '-'); inp.id = id;
-      const wrap = h('div', { class: 'rz-f' + (w ? ' weak' : '') + (r.opts.half ? ' half' : '') }, h('label', { for: id }, r.label), h('div', { class: 'rz-inwrap' }, inp, w ? h('span', { class: 'rz-check' }, 'check this') : null));
+      const wrap = h('div', { class: 'rz-f' + (w ? ' weak' : '') + (r.opts.half ? ' half' : '') }, h('label', { for: id }, r.label, r.opts.remove ? h('button', { type: 'button', class: 'rz-x rz-x-in', 'aria-label': 'Remove section', title: 'Remove section', onclick: (e) => { e.preventDefault(); r.opts.remove(); } }, '×') : null), h('div', { class: 'rz-inwrap' }, inp, w ? h('span', { class: 'rz-check' }, 'check this') : null));
       form.appendChild(wrap);
     }
     if (P.personal || P.declaration) {
@@ -201,17 +201,44 @@
   /* ---------- Rebuild editor ---------- */
   let pvTimer = null;
   function schedule() { M.save(S.R); const s = $('#rzSaved'); if (s) s.textContent = '● Saved on this device'; clearTimeout(pvTimer); pvTimer = setTimeout(preview, 300); }
+  /* the PDF we show, check and download: fitted to one page when "Fit to one page" is on (remembered in meta.pdfroo.fit) */
+  const buildOut = (o) => (S.R.meta.pdfroo.fit ? RR.fitOnePage : RR.build)(S.R, Object.assign({ photo: S.photo }, o || {}));
   async function preview() {
     const box = $('#rzPreview'); if (!box) return;
     const tok = S.renderToken = {};
-    try { const out = await RR.build(S.R, { photo: S.photo }); S.built = out.bytes; await renderPdfInto(out.bytes, box, 4, 1.6, tok); }
-    catch (e) { console.warn('Resume preview failed:', e.message); }
+    try {
+      const out = await buildOut(); if (tok !== S.renderToken) return;
+      S.built = out.bytes; S.lastOut = out; renderFit(out);
+      await renderPdfInto(out.bytes, box, 4, 1.6, tok);
+      atsBadge(out.bytes, tok);
+    } catch (e) { console.warn('Resume preview failed:', e.message); }
+  }
+  /* ATS score of exactly the PDF in the preview (so it follows Fit to one page) */
+  async function atsBadge(bytes, tok) {
+    const AT = root.ResumeATS; if (!AT) return;
+    try { const r = AT.analyze(await AT.read(root.pdfjsLib, bytes), { jd: S.jd || '' }); if (tok !== S.renderToken) return; S.atsScore = r.score; document.querySelectorAll('.rz-atsw-btn').forEach((b) => { b.textContent = 'ATS check · ' + r.score; }); } catch (e) { /* badge only */ }
+  }
+  function renderFit(out) {
+    const bar = $('#rzFit'); if (!bar) return; const P = S.R.meta.pdfroo; bar.innerHTML = '';
+    const T = RR.TEMPLATES[P.template] || RR.TEMPLATES.modern;
+    const n = out.pages, close = n === 2 && out.overflow > 0 && out.overflow < 0.2;
+    if (!P.fit && n < 2) { bar.hidden = true; return; }
+    if (!P.fit && !close) { bar.hidden = false; bar.append(h('span', { class: 'rz-fit-n' }, n + ' pages')); return; }
+    bar.hidden = false;
+    const lines = Math.max(1, Math.round(out.overflow * (841.89 - 2 * T.m) / (T.body * 1.32)));
+    const msg = !P.fit ? 'Spills onto page 2 by ' + (lines <= 6 ? lines + ' line' + (lines > 1 ? 's' : '') : 'a few lines') + ' –'
+      : out.fitted === 'no' ? 'Too long to fit on one page, even with tighter spacing — kept ' + n + ' pages.'
+      : out.fitted === 'yes' ? 'Tightened spacing' + (out.fit && out.fit.body ? ' and text size (' + out.fit.body + 'pt)' : '') + ' to fit.' : 'Already fits on one page.';
+    bar.append(h('span', { class: 'rz-fit-msg', role: 'status' }, msg),
+      h('button', { type: 'button', class: 'rz-pill rz-fit-btn' + (P.fit ? ' on' : ''), id: 'rzFitBtn', 'aria-pressed': String(!!P.fit), onclick: () => { P.fit = !P.fit; schedule(); } }, (P.fit ? '✓ ' : '') + 'Fit to one page'),
+      h('span', { class: 'rz-fit-n' }, n === 1 ? '1 page' : n + ' pages'));
   }
   function editorScreen() {
     const main = show('editor'); const R = S.R, P = R.meta.pdfroo;
     const formP = h('section', { class: 'rz-form', id: 'rzForm', 'aria-label': 'Form' });
     const pvP = h('section', { class: 'rz-pv', 'aria-label': 'Preview' },
       h('div', { class: 'rz-pv-top' }, h('span', { class: 'rz-chip' }, 'Live preview · A4'), h('div', { class: 'rz-pv-acts' }, h('button', { type: 'button', class: 'rz-btn rz-ghost rz-atsw-btn', id: 'rzAtsBtn', onclick: () => atswScreen() }, 'ATS check'), h('button', { type: 'button', class: 'rz-btn rz-dl hide-phone', onclick: atsScreen }, '⬇ Download PDF, free'))),
+      h('div', { class: 'rz-fit', id: 'rzFit', hidden: true }),
       h('div', { class: 'rz-preview', id: 'rzPreview' }),
       h('div', { class: 'rz-strip', id: 'rzStrip', role: 'radiogroup', 'aria-label': 'Template' }),
       h('div', { class: 'rz-colors', id: 'rzColors' }));
@@ -292,7 +319,7 @@
         const add = h('input', { class: 'rz-in', placeholder: 'Add a skill and press Enter', 'aria-label': 'Add a skill', onkeydown: (e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); const v = add.value.trim(); if (v) { v.split(/\s*,\s*/).forEach((n) => n && R.skills.push({ name: n })); schedule(); renderForm(); setTimeout(() => { const n = document.querySelector('#rzForm [aria-label="Add a skill"]'); if (n) n.focus(); }); } } } });
         f.appendChild(card(name, k, h('div', null, chips, add), secCtl(k)));
       } else if (k === 'projects') f.appendChild(card(name, k, entryList(R.projects, () => ({ name: '', description: '', highlights: [] }), (p) => [
-        inField('Project', p, 'name'), inField('Bullets (one per line)', p, 'highlights', Object.assign(lines(p.highlights), { set: (v) => { p.highlights = v.split('\n'); } }))], 'Add project', { key: 'projects', title: (p) => p.name, sub: (p) => (p.highlights || []).filter(Boolean).length + ' bullets' }), secCtl(k)));
+        inField('Project', p, 'name'), inField('Description', p, 'description', { area: true, rows: 2 }), inField('Bullets (one per line)', p, 'highlights', Object.assign(lines(p.highlights), { set: (v) => { p.highlights = v.split('\n'); } }))], 'Add project', { key: 'projects', title: (p) => p.name, sub: (p) => (p.highlights || []).filter(Boolean).length ? (p.highlights || []).filter(Boolean).length + ' bullets' : (p.description ? 'description' : '') }), secCtl(k)));
       else if (k === 'awards') f.appendChild(card(name, k, inField('One per line', null, null, { area: true, get: () => R.awards.map((a) => a.title).join('\n'), set: (v) => { R.awards = v.split('\n').map((t) => ({ title: t })); } }), secCtl(k)));
       else if (k === 'languages') f.appendChild(card(name, k, inField('Comma separated', null, null, { get: () => R.languages.map((a) => a.language).join(', '), set: (v) => { R.languages = v.split(/\s*,\s*/).filter(Boolean).map((t) => ({ language: t })); } }), secCtl(k)));
       else if (k === 'interests') f.appendChild(card(name, k, inField('Comma separated', null, null, { get: () => R.interests.map((a) => a.name).join(', '), set: (v) => { R.interests = v.split(/\s*,\s*/).filter(Boolean).map((t) => ({ name: t })); } }), secCtl(k)));
@@ -337,7 +364,7 @@
   async function atsScreen() {
     const A = root.PdfrooApp; A && A.busy(true, 'Making your PDF…');
     let out, chk;
-    try { out = await RR.build(S.R, { photo: S.photo }); chk = await RR.atsCheck(out.bytes, S.R, out.order); }
+    try { out = await buildOut(); chk = await RR.atsCheck(out.bytes, S.R, out.order); }
     catch (e) { toast('Could not make the PDF: ' + e.message, 'error'); return; }
     finally { A && A.busy(false); }
     const main = show('ats'); const ok = chk.checks.every((c) => c.ok);
@@ -362,7 +389,7 @@
     const A = root.PdfrooApp, AT = root.ResumeATS; which = which || 'built'; if (jd == null) jd = S.jd || ''; S.jd = jd;
     A && A.busy(true, 'Reading it like an ATS…');
     let bytes, r, tpl = RR.TEMPLATES[S.R.meta.pdfroo.template] || RR.TEMPLATES.modern;
-    try { bytes = which === 'orig' && S.srcBytes ? S.srcBytes : (await RR.build(S.R, { photo: S.photo })).bytes; r = AT.analyze(await AT.read(root.pdfjsLib, bytes), { jd }); }
+    try { bytes = which === 'orig' && S.srcBytes ? S.srcBytes : (await buildOut()).bytes; r = AT.analyze(await AT.read(root.pdfjsLib, bytes), { jd }); }
     catch (e) { toast('Could not read the PDF: ' + e.message, 'error'); return; }
     finally { A && A.busy(false); }
     const main = show('atsw'), lv = { high: 'High', med: 'Medium', low: 'Low' };

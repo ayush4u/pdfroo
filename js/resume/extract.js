@@ -219,7 +219,7 @@
     if (/^\s*(?:19|20)\d{2}\s*[:\-–]?\s+[a-z]/i.test(l.text) && !RANGE_RE.test(l.text.slice(0, 25))) return false;
     return rest.length >= 3 && l.text.length <= 110;
   };
-  function entries(lines0, isEdu) {
+  function entries(lines0, isEdu, isProj) {
     const lines = markBullets(lines0);
     const groups = [];
     let cur = null;
@@ -229,9 +229,14 @@
       // a bold, non-bullet title line directly followed by its company/date line also opens an entry
       const nx = lines.slice(i + 1, i + 3);
       const titleFirst = !l.isB && !l.cont && !r && l.text.length < 80 && (l.bold || TITLE_RE.test(l.text)) && nx.some((q) => isHeaderLine(q)) && !nx.some((q) => q.isB && lines.indexOf(q) < lines.indexOf(nx.find(isHeaderLine)));
-      const starts = !cur || titleFirst || (hdr && !(cur.opener && !cur.range && cur.lines.length <= 2));
+      // education: a line with its own year ("Diploma ..., Mumbai University | 2018 | 65.53%") is its own entry
+      const eduLine = isEdu && !l.isB && !l.cont && /\b(?:19|20)\d{2}\b/.test(l.text) && l.text.replace(/[^A-Za-z]/g, '').length >= 6 && !(cur && cur.lines.length === 1 && !/\b(?:19|20)\d{2}\b/.test(cur.lines[0].text));
+      // projects: a bold (or stand-alone short) title line followed by its description opens a new project
+      const nxt = lines[i + 1], prv = lines[i - 1];
+      const projTitle = isProj && !l.isB && !l.cont && !!nxt && !nxt.bold && l.text.length < 90 && !/[.,;:]$/.test(l.text.trim()) && (l.bold || (prv && /[.!?]$/.test(prv.text.trim()) && l.text.length < 70));
+      const starts = !cur || titleFirst || projTitle || (eduLine && cur && cur.lines.some((q) => /\b(?:19|20)\d{2}\b/.test(q.text))) || (hdr && !(cur.opener && !cur.range && cur.lines.length <= 2));
       if (!starts && hdr && cur && !cur.range) { cur.lines.push(l); cur.range = r; return; }
-      if (starts) { cur = { lines: [l], range: hdr ? r : null, opener: titleFirst }; groups.push(cur); }
+      if (starts) { cur = { lines: [l], range: hdr || (eduLine && r) ? r : null, opener: titleFirst }; groups.push(cur); }
       else { cur.lines.push(l); if (!cur.range && hdr) cur.range = r; }
     });
     return groups.map((g) => {
@@ -244,10 +249,17 @@
         const all = g.lines.map((l) => l.text).join(' ');
         const sc = all.match(/(?:cgpa|gpa|sgpa|percentage|score|marks)\s*[:\-]?\s*[\d.]+\s*(?:\/\s*\d+)?%?|\b\d{2}(?:\.\d+)?\s*%|\b\d\.\d{1,2}\s*\/\s*10\b/i);
         let [a, b] = h.length >= 2 ? [h[0], h[1]] : splitTitle(h[0] || '');
+        let area = '';
+        const INST = /\b(college|university|school|institute|institution|academy|board|vidyalaya|polytechnic|iit|nit|iiit|campus)\b/i;
+        if (g.lines.length === 1) {   // "Degree, Subject, College, City | 2021 | CGPA 7.15/10" on one line
+          const seg = g.lines[0].text.split(/\s*\|\s*/).map((x) => tidy(g.range ? x.replace(g.range.raw, ' ') : x)).filter((x) => x && (!sc || !sc[0].includes(x)) && !(sc && x.includes(sc[0]) && x.length - sc[0].length < 3));
+          const parts = (seg[0] || '').split(/\s*,\s*/).filter(Boolean), ii = parts.findIndex((x, j) => j > 0 && INST.test(x));
+          if (ii > 0) { a = parts.slice(ii).join(', '); b = parts[0]; area = parts.slice(1, ii).join(', '); }
+        }
         const degFirst = /\b(b\.?\s?tech|b\.?\s?e\b|bachelor|master|m\.?\s?tech|mba|b\.?\s?sc|m\.?\s?sc|b\.?com|m\.?com|b\.?a\b|m\.?a\b|ph\.?d|diploma|class|10th|12th|ssc|hsc|cbse|icse|b\.?des|bca|mca|b\.?arch|degree|secondary)/i;
         if (degFirst.test(a) && !degFirst.test(b)) [a, b] = [b, a];
-        const ent = { institution: a || '', studyType: (b || '').replace(sc ? sc[0] : '\u0000', '').replace(/[,|]\s*$/, '').trim(), area: '', score: sc ? clean(sc[0]) : '', ...dates, courses: [] };
-        const extra = bulletsFrom(rest).filter((x) => !sc || !x.includes(sc[0]));
+        const ent = { institution: a || '', studyType: (b || '').replace(sc ? sc[0] : '\u0000', '').replace(/[,|]\s*$/, '').trim(), area, score: sc ? clean(sc[0]) : '', ...dates, courses: [] };
+        const extra = g.lines.length === 1 ? [] : bulletsFrom(rest).filter((x) => !sc || !x.includes(sc[0]));
         if (extra.length) ent.courses = extra;
         return { ent, conf: (ent.institution && g.range ? 0.85 : 0.55) * (h.length ? 1 : 0.8) };
       }
@@ -257,6 +269,7 @@
       else [position, company] = splitTitle(h[0] || '');
       company = company.replace(/\s{2,}.*$/, '');
       const ent = { position: tidy(position), name: tidy(company), location, ...dates, highlights: bulletsFrom(rest) };
+      if (isProj && rest.length && !markBullets(rest).some((q) => q.isB)) { ent.description = ent.highlights.join(' '); ent.highlights = []; }
       return { ent, conf: (position && company && g.range ? 0.85 : position && (company || g.range) ? 0.65 : 0.45) };
     });
   }
@@ -361,8 +374,16 @@
     const loc = top.map((l) => l.text).join(' · ').match(new RegExp('\\b([A-Z][a-zA-Z]+(?:\\s[A-Z][a-zA-Z]+)?),\\s*(' + REG + ')\\b'));
     if (loc && loc[0] !== r.basics.name && !/manager|engineer|developer|designer|analyst/i.test(loc[1])) { r.basics.location = { city: loc[1], region: loc[2] }; conf['basics.location'] = 0.6; }
     if (nm) {
-      const after = p1.filter((l) => l !== nm && l.relY >= nm.relY && l.relY < nm.relY + 0.08 && !/[@\d]/.test(l.text) && !l.hkey && l.text.length < 60 && l.text.split(/\s+/).length <= 7);
-      if (after[0]) { r.basics.label = clean(after[0].text).replace(/\s*[|·].*$/, ''); conf['basics.label'] = 0.6; }
+      // the headline is the first line right under the name, before the contact block or the first heading:
+      // "AI Automation Engineer | LLM agents, RAG, UiPath" is the job title, not an "Other" section
+      const isContact = (t) => EMAIL_RE.test(t) || PHONE_IN.test(t) || /linkedin|github|https?:|www\.|\.(?:com|io|in|dev|me|org)\b/i.test(t);
+      for (let i = all.indexOf(nm) + 1; i < all.length; i++) {
+        const l = all[i];
+        if (l.page !== 0 || l.hkey || l.relY > nm.relY + 0.1 || isContact(l.text)) break;
+        const t = clean(l.text), words = t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+        if (t.length >= 3 && t.length <= 90 && words <= 12 && !/[.]$/.test(t) && !/\d{4,}/.test(t)) { r.basics.label = t; conf['basics.label'] = 0.7; }
+        break;
+      }
     }
     // sections
     const other = []; const usedKeys = [];
@@ -371,9 +392,9 @@
       const hc = Math.min(1, s.hscore / 5);
       if (s.key === 'summary') { r.basics.summary = (r.basics.summary ? r.basics.summary + ' ' : '') + bulletsFrom(s.lines).join(' '); conf['basics.summary'] = 0.85 * hc + 0.1; }
       else if (s.key === 'work' || s.key === 'projects') {
-        const es = entries(s.lines, false);
+        const es = entries(s.lines, false, s.key === 'projects');
         es.forEach((e) => {
-          if (s.key === 'projects') { r.projects.push({ name: [e.ent.position, e.ent.name].filter(Boolean).join(' — '), description: '', startDate: e.ent.startDate, endDate: e.ent.endDate, highlights: e.ent.highlights }); conf['projects.' + (r.projects.length - 1)] = Math.max(0.6, e.conf) * hc; }
+          if (s.key === 'projects') { r.projects.push({ name: [e.ent.position, e.ent.name].filter(Boolean).join(' — '), description: e.ent.description || '', startDate: e.ent.startDate, endDate: e.ent.endDate, highlights: e.ent.highlights }); conf['projects.' + (r.projects.length - 1)] = Math.max(0.6, e.conf) * hc; }
           else { r.work.push(e.ent); conf['work.' + (r.work.length - 1)] = e.conf * (0.7 + 0.3 * hc); }
         });
       } else if (s.key === 'education') {
@@ -397,7 +418,7 @@
     if (leftover.length) {
       const t = leftover.map((l) => l.text).join(' ');
       if (!r.basics.summary && t.length > 80) { r.basics.summary = t; conf['basics.summary'] = 0.5; }
-      else if (t.length > 2) other.unshift({ title: 'Other', text: leftover.map((l) => l.text).join('\n'), unmapped: true });
+      else if (t.replace(/[^A-Za-z0-9]/g, '').length >= 3) other.unshift({ title: 'Other', text: leftover.map((l) => l.text).join('\n'), unmapped: true });
     }
     P.custom = other;
     P.order = usedKeys.filter((k) => M().DEFAULT_ORDER.includes(k)).concat(M().DEFAULT_ORDER.filter((k) => !usedKeys.includes(k)));

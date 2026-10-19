@@ -43,7 +43,10 @@
 
   async function build(resume, opts) {
     opts = opts || {};
-    const T = TEMPLATES[opts.template || (resume.meta && resume.meta.pdfroo.template) || 'modern'] || TEMPLATES.modern;
+    const tid = TEMPLATES[opts.template || (resume.meta && resume.meta.pdfroo.template)] ? opts.template || resume.meta.pdfroo.template : 'modern';
+    // opts.fit: { gap, lhK, m, body } overrides used by fitOnePage (template object itself is never changed)
+    const T = Object.assign({ lhK: 1 }, TEMPLATES[tid], { id: tid }, opts.fit || {});
+    if (opts.fit && opts.fit.body) T.head = Math.max(opts.fit.body, TEMPLATES[tid].head - (TEMPLATES[tid].body - opts.fit.body));
     const P = resume.meta.pdfroo, L = root.PDFLib;
     await ensureFontkit();
     const doc = await L.PDFDocument.create();
@@ -69,7 +72,7 @@
       if (ln) out.push(ln); return out;
     };
     const text = (t, o) => {
-      const f = o.bold ? FB : F, s = o.size || T.body, lh = s * (o.lh || 1.32), x0 = o.x != null ? o.x : CX, w = o.w || (CX + CW - x0);
+      const f = o.bold ? FB : F, s = o.size || T.body, lh = s * (o.lh || 1.32) * T.lhK, x0 = o.x != null ? o.x : CX, w = o.w || (CX + CW - x0);
       for (const ln of wrap(t, f, s, w)) {
         need(lh); y -= lh;
         const tw = f.widthOfTextAtSize(ln, s);
@@ -79,7 +82,7 @@
     };
     const rowWithDate = (left, right, o) => {   // "Role, Company ........ 2020 – 2022" on one baseline, left text first
       const s = o.size || T.body, f = FB, rw = right ? F.widthOfTextAtSize(safe(right, F), s) : 0;
-      const narrow = CW < 300, lines = wrap(left, f, s, narrow ? CW : CW - rw - 12), lh = s * 1.35;
+      const narrow = CW < 300, lines = wrap(left, f, s, narrow ? CW : CW - rw - 12), lh = s * 1.35 * T.lhK;
       lines.forEach((ln, i) => {
         need(lh); y -= lh;
         page.drawText(ln, { x: CX, y: y + (lh - s) * 0.45, size: s, font: f, color: ink });
@@ -93,7 +96,7 @@
     if (opts.photo && opts.photo.bytes && P.photoShape !== 'skip') {
       try { photo = opts.photo.type === 'image/png' ? await doc.embedPng(opts.photo.bytes) : await doc.embedJpg(opts.photo.bytes); } catch (e) { photo = null; }
     }
-    const ps = T === TEMPLATES.compact ? 46 : 58;
+    const ps = T.id === 'compact' ? 46 : 58;
     let hx = m;
     const topY = y;
     if (photo) {
@@ -110,21 +113,21 @@
     const halign = photo ? 'left' : T.align;
     y -= 4;
     text(b.name || 'Your Name', { bold: true, size: T.name, x: hx, align: halign, lh: 1.15, color: nameCol });
-    if (b.label) text(b.label, { bold: T === TEMPLATES.modern, size: T.body + 1, x: hx, align: halign, color: T === TEMPLATES.modern && !ac ? acc : soft });
+    if (b.label) text(b.label, { bold: T.id === 'modern', size: T.body + 1, x: hx, align: halign, color: T.id === 'modern' && !ac ? acc : soft });
     const loc = [b.location && b.location.city, b.location && b.location.region].filter(Boolean).join(', ');
     const contact = [loc, b.email, b.phone, b.url, ...(b.profiles || []).map((p) => p.url)].filter(Boolean).join('  ·  ');
     if (contact) text(contact, { size: T.body - 0.5, x: hx, align: halign, color: soft });
     if (photo) y = Math.min(y, topY - ps - 8);
     y -= T.gap * 0.6;
-    if (T.rule === 'full' || T === TEMPLATES.modern) { page.drawLine({ start: { x: m, y }, end: { x: W - m, y }, thickness: T.rule === 'full' ? 0.9 : 0.5, color: ac ? (T.rule === 'full' ? acc : ruleCol) : T.rule === 'full' ? ink : L.rgb(0.92, 0.85, 0.76) }); }
+    if (T.rule === 'full' || T.id === 'modern') { page.drawLine({ start: { x: m, y }, end: { x: W - m, y }, thickness: T.rule === 'full' ? 0.9 : 0.5, color: ac ? (T.rule === 'full' ? acc : ruleCol) : T.rule === 'full' ? ink : L.rgb(0.92, 0.85, 0.76) }); }
     // ---- sections in the user's order
     let curKey = null; const heading = (name) => {
       if (curKey && !written.includes(curKey)) written.push(curKey);
-      need(T.head * 3.2); y -= T.gap;
+      need(T.gap + T.head * 1.2 * T.lhK + 5 + T.body * 1.4 * T.lhK); y -= T.gap;
       text(name.toUpperCase(), { bold: true, size: T.head, color: acc, lh: 1.2 });
       y -= 3; page.drawLine({ start: { x: CX, y }, end: { x: CX + CW, y }, thickness: T.rule === 'full' ? 0.7 : 0.4, color: ac ? (T.rule === 'full' ? acc : ruleCol) : T.rule === 'full' ? ink : L.rgb(0.9, 0.83, 0.74) }); y -= 2;
     };
-    const bullets = (arr) => { for (const h of arr || []) if (String(h).trim()) { const s = T.body, x = CX + 10; need(s * 1.32); const y0 = y; text(h, { x, size: s }); page.drawCircle({ x: CX + 3.5, y: y0 - s * 1.32 + (s * 0.32) * 0.45 + s * 0.33, size: 1.3, color: ink }); } };
+    const bullets = (arr) => { for (const h of arr || []) if (String(h).trim()) { const s = T.body, x = CX + 10, bl = s * 1.32 * T.lhK; need(bl); const y0 = y; text(h, { x, size: s }); page.drawCircle({ x: CX + 3.5, y: y0 - bl + (bl - s) * 0.45 + s * 0.33, size: 1.3, color: ink }); } };
     const order = (P.order || root.ResumeModel.DEFAULT_ORDER);
     const S = SNAME(); const written = [];
     const SIDE = ['skills', 'education', 'languages', 'interests'];
@@ -150,9 +153,10 @@
     } };
     writeSections(mainKeys);
     curKey = null;
-    for (const c of P.custom || []) if (c.text && c.text.trim() && c.keep !== false) { heading(c.title || 'Additional Information'); written.push('custom:' + (c.title || 'Additional Information')); bullets(c.text.split('\n')); }
+    for (const c of P.custom || []) if (c.text && c.text.replace(/[^A-Za-z0-9]/g, '').length >= 3 && c.keep !== false) { heading(c.title || 'Additional Information'); written.push('custom:' + (c.title || 'Additional Information')); bullets(c.text.split('\n')); }
     if (P.keepPersonal && P.personal && P.personal.text) { heading('Personal Details'); written.push('custom:Personal Details'); for (const ln of P.personal.text.split('\n')) text(ln, {}); }
     if (P.keepDeclaration && P.declaration && P.declaration.text) { heading('Declaration'); written.push('custom:Declaration'); text(P.declaration.text, {}); }
+    const mainEnd = { y, pi };
     if (T.twoCol) {   // sidebar written AFTER the main column in the content stream
       pi = 0; page = pages[0]; y = bodyTop; CX = sideX; CW = sideW;
       const links = [b.url, ...(b.profiles || []).map((p) => p.url)].filter(Boolean);
@@ -161,7 +165,36 @@
     }
     doc.setTitle((b.name || 'Resume') + ' — Resume'); doc.setSubject('Resume'); doc.setCreator('Pdfroo'); doc.setProducer('Pdfroo (pdf-lib)'); doc.setLanguage('en');
     const bytes = await doc.save({ useObjectStreams: true });
-    return { bytes, pages: doc.getPageCount(), order: written.filter((k) => !k.startsWith('custom:')), written };
+    // how far the content runs onto its last page, as a share of the usable page height (for the "fit" hint)
+    const lastY = T.twoCol && mainEnd.pi === pages.length - 1 ? mainEnd.y : y;
+    const overflow = pages.length > 1 ? (H - m - lastY) / (H - 2 * m) + (pages.length - 2) : 0;
+    return { bytes, pages: doc.getPageCount(), order: written.filter((k) => !k.startsWith('custom:')), written, overflow, fit: opts.fit || null };
+  }
+
+  /* ---- Fit to one page: section gap first, then line height, then margins (>= 34pt), then body in small steps (>= 9.5pt) ---- */
+  const FIT_MIN = { gap: 8, lhK: 0.92, m: 34, body: 9.5 };
+  function fitSteps(tid) {
+    const T = TEMPLATES[tid] || TEMPLATES.modern, st = [], cur = {};
+    const push = () => st.push(Object.assign({}, cur));
+    for (let g = T.gap - 1; g >= Math.min(T.gap, FIT_MIN.gap); g--) { cur.gap = g; push(); }
+    for (let k = 0.98; k >= FIT_MIN.lhK - 1e-9; k -= 0.02) { cur.lhK = +k.toFixed(2); push(); }
+    for (let mm = T.m - 2; mm >= Math.min(T.m, FIT_MIN.m); mm -= 2) { cur.m = mm; push(); }
+    if (T.m > FIT_MIN.m && cur.m !== FIT_MIN.m) { cur.m = FIT_MIN.m; push(); }
+    for (let b = +(T.body - 0.1).toFixed(1); b >= FIT_MIN.body - 1e-9; b = +(b - 0.1).toFixed(1)) { cur.body = b; push(); }
+    return st;
+  }
+  async function fitOnePage(resume, opts) {
+    opts = opts || {};
+    const tid = opts.template || resume.meta.pdfroo.template || 'modern';
+    const base = await build(resume, Object.assign({}, opts, { fit: null }));
+    if (base.pages <= 1) return Object.assign(base, { fitted: 'already' });
+    const steps = fitSteps(tid);
+    if (!steps.length) return Object.assign(base, { fitted: 'no' });
+    const last = await build(resume, Object.assign({}, opts, { fit: steps[steps.length - 1] }));
+    if (last.pages > 1) return Object.assign(base, { fitted: 'no', basePages: base.pages });   // can't: keep the normal 2-page layout
+    let lo = 0, hi = steps.length - 1, best = last;     // smallest change that fits (page count only drops as steps go on)
+    while (lo < hi) { const mid = (lo + hi) >> 1; const o = await build(resume, Object.assign({}, opts, { fit: steps[mid] })); if (o.pages <= 1) { hi = mid; best = o; } else lo = mid + 1; }
+    return Object.assign(best, { fitted: 'yes', basePages: base.pages });
   }
 
   /* ---- "See what recruiters' software sees": plain text via pdf.js + 4 checks ---- */
@@ -215,5 +248,5 @@
       { id: 'roundtrip', label: lost.length ? 'Read back: ' + lost.slice(0, 4).join(', ') + (lost.length > 4 ? ' +' + (lost.length - 4) + ' more' : '') + ' lost' : 'Read back: email, phone, skills, jobs and dates all found', ok: !lost.length },
     ] };
   }
-  root.ResumeRender = { safeAccent, ACCENTS, build, atsCheck, TEMPLATES, fmtDate, range };
+  root.ResumeRender = { safeAccent, ACCENTS, build, fitOnePage, fitSteps, FIT_MIN, atsCheck, TEMPLATES, fmtDate, range };
 })(window);

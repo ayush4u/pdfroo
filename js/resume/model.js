@@ -8,7 +8,7 @@
     return {
       basics: { name: '', label: '', email: '', phone: '', url: '', image: '', summary: '', location: { city: '', region: '' }, profiles: [] },
       work: [], education: [], skills: [], projects: [], awards: [], languages: [], interests: [],
-      meta: { pdfroo: { template: 'modern', photoShape: 'round', order: DEFAULT_ORDER.slice(), custom: [], personal: null, declaration: null, keepPersonal: false, keepDeclaration: false, conf: {} } },
+      meta: { pdfroo: { template: 'modern', photoShape: 'round', order: DEFAULT_ORDER.slice(), custom: [], personal: null, declaration: null, keepPersonal: false, keepDeclaration: false, fit: false, conf: {} } },
     };
   }
   function normalize(r) {

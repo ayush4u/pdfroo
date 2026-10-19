@@ -220,3 +220,11 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
   .rz-atsw-text pre { max-height: 420px; }
   .rz-sticky .rz-atsw-btn { width: 100%; min-height: 44px; }
 }
+
+/* Fit to one page bar (preview) */
+.rz-fit{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 10px;padding:8px 10px;border:1px solid #f0d9bf;background:#fff8ef;border-radius:10px;font-size:13px;color:#5b4a3a}
+.rz-fit[hidden]{display:none}
+.rz-fit-msg{flex:1 1 180px;min-width:0}
+.rz-fit-btn{white-space:nowrap}
+.rz-fit-n{font-weight:600;white-space:nowrap;padding:2px 8px;border-radius:999px;background:#fff;border:1px solid #e8d3b8}
+.rz-x.rz-x-in{position:static;margin-left:6px;width:22px;height:22px;line-height:20px;font-size:16px;vertical-align:middle}
