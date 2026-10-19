@@ -111,13 +111,14 @@ Downloads are lazy and happen only on the first checked line: tesseract.js + wor
 
 **Protected PDFs** – Encrypted files are detected when you open or merge them and refused with a clear message, instead of being exported as scrambled pages. This covers password-to-open files and files with only an owner/permissions password.
 
-**Keyboard shortcuts** – `Ctrl/⌘+Z` undo, `Ctrl+Y` / `Ctrl+Shift+Z` redo, `Delete`/`Backspace` delete selection, `Ctrl+S` download, `Ctrl+D` duplicate selection, `V T X P H R E L A W` tools, `I` image, `S` signature, `←/→` `PgUp/PgDn` pages, `+ − 0` zoom, `Ctrl+F` find & replace, `Esc` deselect, `?` help.
-
-## Coming
-
-* **Split PDF**: by page ranges (e.g. `1-3,5,7-9`), every N pages or one file per page, as one PDF or a zip of PDFs; extract selected pages into one PDF.
+**Page tools** (on the home page, `js/tools/pages.js`, pdf-lib + pdf.js, everything on your device):
+* **Split or extract pages**: by page ranges (e.g. `1-3,5,7-9`), every N pages or one file per page, as one PDF or a zip of PDFs; extract selected pages into one PDF.
 * **Images to PDF**: JPG / PNG / WebP, page size (fit image, A4, Letter), orientation and margin, EXIF orientation respected.
 * **PDF to images**: PNG or JPG at 72 / 150 / 300 dpi, one image or a zip.
+
+**Fill in a PDF form** (on the home page, `js/tools/forms.js`) – fills the fields of an existing PDF form (AcroForm: text, multi-line text, checkboxes, radio buttons, dropdowns and lists) on your device. pdf.js finds and shows the fields, pdf-lib writes the answers. Digitally signed PDFs get a warning and are only saved after you confirm again.
+
+**Keyboard shortcuts** – `Ctrl/⌘+Z` undo, `Ctrl+Y` / `Ctrl+Shift+Z` redo, `Delete`/`Backspace` delete selection, `Ctrl+S` download, `Ctrl+D` duplicate selection, `V T X P H R E L A W` tools, `I` image, `S` signature, `←/→` `PgUp/PgDn` pages, `+ − 0` zoom, `Ctrl+F` find & replace, `Esc` deselect, `?` help.
 
 ## Architecture
 
@@ -167,7 +168,7 @@ vendor/fonts/edit/      lazily loaded substitute fonts for editing existing text
 * Refused: scanned pages without a text layer, outlined text, rotated / skewed / vertical text, Type 3 fonts, text without Unicode mapping, invisible OCR layers, legacy Hindi fonts other than Kruti Dev/DevLys/Chanakya, and existing lines in Arabic/Hebrew/Thai/Sinhala.
 * On a page rotated in Pdfroo, the inline line editor is still horizontal.
 * Encrypted PDFs (user **or** owner password) can't be edited yet. They are rejected with a message; remove the protection (e.g. "Print to PDF") first.
-* Interactive form fields are preserved in the export (still fillable in other apps), but Pdfroo itself can't fill them. Type on top instead.
+* Interactive form fields are preserved in the export (still fillable in other apps). The editor itself doesn't fill them; use **Fill in a PDF form** on the home page.
 * New text in Arabic, Hebrew, Thai, CJK and emoji is exported as an image, so it isn't selectable or searchable. On screen it uses your system's fonts for those scripts. Indic scripts are real text (see above).
 * Indic: only Noto **Sans** faces (no serif Indic substitute), so an edited line in a serif Hindi font (Kokila, Mangal-serif styles) changes typeface. Reading checks: Word subsets have no GSUB, so conjunct glyphs rely on ToUnicode + OCR + the per-document learned glyph map; `tessdata_fast` misreads (digits, nukta, ि) mean most broken lines need confirmation; the Telugu/Kannada logical reordering is heuristic; OCR is unavailable on `file://`; the Kruti Dev/Chanakya converter is research quality. Extractors that ignore `/ActualText` and read only ToUnicode may show an extra ZWSP where a mark was drawn out of flow. Assamese, Sinhala, Ol Chiki and other scripts aren't covered.
 * Combining accent marks typed as separate characters may sit slightly off in the PDF; precomposed characters (é, ñ, ά…) are fine.
