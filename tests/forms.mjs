@@ -144,6 +144,25 @@ ok('33 Phone: Done closes the editor', !(await m.$('.ff-sheet')));
 d = await download(m); v = await readBack(m, d.bytes);
 ok('34 Phone: answers saved', v.full_name === 'Ayush' && v.pin === '110001', JSON.stringify([v.full_name, v.pin]));
 
+// near-miss taps: 15px off a tiny box still hits it; far taps do nothing
+const near = async (sel, dx, dy) => { const bb = await m.locator(sel).boundingBox(); await m.touchscreen.tap(bb.x + bb.width / 2 + dx, bb.y + bb.height / 2 + dy); };
+await near('[aria-label="agree"]', 0, 0).catch(() => {}); const was = await m.isChecked('[aria-label="agree"]');
+const cbBox = await m.locator('[aria-label="agree"]').boundingBox();
+ok('41 Phone: checkbox is tiny on the page (why this matters)', cbBox.height < 20, Math.round(cbBox.height) + 'px');
+await near('[aria-label="agree"]', cbBox.width / 2 + 15, 0);
+ok('42 Phone: tap 15px beside a checkbox ticks it', (await m.isChecked('[aria-label="agree"]')) !== was);
+await near('[aria-label="gender Other"]', 14, 0);
+ok('43 Phone: tap beside a radio picks that radio', await m.isChecked('[aria-label="gender Other"]'));
+const pinBox = await m.locator('[aria-label="pin"]').boundingBox();
+await near('[aria-label="pin"]', 0, -(pinBox.height / 2 + 12));
+ok('44 Phone: tap just above a small text box picks the nearest box and opens the editor', (await m.getAttribute('.ff-sheet .ff-sheet-in', 'aria-label').catch(() => '')) !== '' );
+await m.click('.ff-sheet button:has-text("Done")').catch(() => {});
+const before = JSON.stringify(await m.evaluate(() => [...document.querySelectorAll('.ff-f')].map((e) => e.type === 'checkbox' || e.type === 'radio' ? e.checked : e.value)));
+const pg = await m.locator('.ff-page').first().boundingBox(); await m.touchscreen.tap(pg.x + pg.width - 20, pg.y + pg.height - 40);
+ok('45 Phone: tap on empty page area changes nothing', !(await m.$('.ff-sheet')) && before === JSON.stringify(await m.evaluate(() => [...document.querySelectorAll('.ff-f')].map((e) => e.type === 'checkbox' || e.type === 'radio' ? e.checked : e.value))));
+const hb = await m.evaluate(() => { const b = document.querySelector('.ff-x'); document.querySelector('.ff-x').click(); return Math.round(document.getElementById('landingFormBtn').getBoundingClientRect().height); });
+ok('46 Phone: "Fill in a PDF form" home button is 44px+', hb >= 44, hb + 'px');
+
 ok('35 No page errors', !errs.length, errs.slice(0, 2).join(' | '));
 ok('36 Nothing sent off the device', !reqs.length, reqs.slice(0, 2).join(' '));
 await b.close(); srv.close();

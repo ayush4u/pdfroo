@@ -214,6 +214,20 @@
         e.addEventListener('keydown', (k) => { if (k.key === 'Enter' && e.tagName === 'INPUT') { k.preventDefault(); focusField(cur + 1); } });
         layer.append(e); if (!inputs.has(w.name)) inputs.set(w.name, []); inputs.get(w.name).push(e);
       }
+      // Phones: page-scale boxes are ~11-13px. A tap that lands within 22px of a field goes to the nearest one,
+      // so every field gets a 44px target without hit areas overlapping in dense forms.
+      layer.addEventListener('click', (ev) => {
+        if (!coarse() || ev.target !== layer) return;
+        let best = null, bd = 23;
+        for (const f of layer.children) {
+          if (f.disabled) continue;
+          const r = f.getBoundingClientRect(), dx = Math.max(r.left - ev.clientX, 0, ev.clientX - r.right), dy = Math.max(r.top - ev.clientY, 0, ev.clientY - r.bottom), dd = Math.hypot(dx, dy);
+          if (dd < bd) { bd = dd; best = f; }
+        }
+        if (!best) return;
+        if (best.type === 'checkbox' || best.type === 'radio') best.click();
+        else { best.focus(); if (best.tagName === 'SELECT' && best.showPicker) try { best.showPicker(); } catch (e) {} }
+      });
       renderPage(pdf, p, cv, wrap);
     }
     upd();
