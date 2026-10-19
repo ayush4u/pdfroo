@@ -23,4 +23,4 @@
 .pt-list .pt-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pt-list .icon-btn { min-width: 44px; min-height: 44px; }
 /* home page entry buttons: 44px tap targets */
-#landing #landingSplitBtn, #landing #landingImg2PdfBtn, #landing #landingPdf2ImgBtn { min-height: 44px; }
+#landing #landingSplitBtn, #landing #landingImg2PdfBtn, #landing #landingPdf2ImgBtn, #landing #landingFormBtn { min-height: 44px; }
