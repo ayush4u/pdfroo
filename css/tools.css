@@ -1,0 +1,21 @@
+/* Page tools dialog (js/tools/pages.js) — phone-first, uses the editor's orange accent */
+.pt-dialog { width: min(480px, calc(100vw - 24px)); }
+.pt-inner { display: flex; flex-direction: column; max-height: inherit; }
+.pt-head { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.pt-body { display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+.pt-file { margin: 0; font-weight: 600; word-break: break-all; }
+.pt-hint { margin: 0; opacity: .75; font-size: .9rem; }
+.pt-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.pt-chip { min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1.5px solid var(--primary); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.pt-chip[aria-checked="true"] { background: var(--primary); color: #fff; }
+.pt-input { min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--surface-3); font: inherit; background: transparent; color: inherit; }
+.pt-input[hidden] { display: none; }
+.pt-check { display: flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+.pt-check input { width: 22px; height: 22px; }
+.pt-go { min-height: 48px; }
+.pt-msg { margin: 0; min-height: 1.2em; }
+.pt-msg.bad { color: #b42318; }
+.pt-list { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 4px; }
+.pt-list li { display: flex; align-items: center; gap: 4px; }
+.pt-list .pt-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt-list .icon-btn { min-width: 44px; min-height: 44px; }
