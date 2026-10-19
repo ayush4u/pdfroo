@@ -1198,3 +1198,5 @@ body.kb-open .pager { display: none; }
   .reflow-preview:not(.uncertain) .rf-edge { display: none; }
   .reflow-preview .rf-added { fill: rgba(22, 163, 74, .22); }
 }
+.tl-short { display: none; }
+@media (max-width: 400px) { .toolbar .tl-long { display: none; } .toolbar .tl-short { display: inline; } }
