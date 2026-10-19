@@ -1970,6 +1970,36 @@
     sheetify(wrap.querySelector('.tb-pop'), phoneUI);
     dl.parentNode.insertBefore(wrap, dl);
   })();
+  /* phones: the bottom tool bar shows the most-used tools plus More ⋯ (a bottom sheet with the rest). Delete lives on the
+     selection bar there (it already has one), so it is not repeated in the sheet. */
+  (function toolsMore() {
+    const bar = $('#toolbar'); if (!bar) return;
+    const extras = [...bar.querySelectorAll('.tool.tool-extra:not(.tool-del)')];
+    const trig = document.createElement('button'); trig.type = 'button'; trig.className = 'tool tools-more'; trig.id = 'toolsMore';
+    trig.setAttribute('aria-label', 'More tools'); trig.title = 'More tools';
+    trig.innerHTML = '<svg class="i"><use href="#i-more"/></svg><span class="tool-label">More</span>';
+    const wrap = popover('tools', trig, (pop) => {
+      pop.classList.add('tools-sheet'); pop.setAttribute('aria-label', 'More tools');
+      extras.forEach((orig) => {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'tools-item';
+        const ic = orig.querySelector('svg'); if (ic) b.appendChild(ic.cloneNode(true));
+        const t = document.createElement('span'); t.textContent = (orig.querySelector('.tool-label') || orig).textContent.trim(); b.appendChild(t);
+        b.setAttribute('aria-label', (orig.getAttribute('aria-label') || '').replace(/ \(.*\)$/, '')); b._orig = orig;
+        b.addEventListener('click', () => { closePops(); orig.click(); });
+        pop.appendChild(b);
+      });
+    });
+    wrap.classList.add('tools-more-wrap');
+    const pop = wrap.querySelector('.tb-pop'); sheetify(pop, phoneUI);
+    bar.appendChild(wrap);
+    // More lights up while one of its tools is the current one
+    const sync = () => {
+      const on = extras.some((e) => e.classList.contains('active') || e.getAttribute('aria-expanded') === 'true');
+      if (trig.classList.contains('active') !== on) trig.classList.toggle('active', on);
+      pop.querySelectorAll('.tools-item').forEach((b) => { const a = String(b._orig.classList.contains('active')); if (b.getAttribute('aria-pressed') !== a) b.setAttribute('aria-pressed', a); });
+    };
+    new MutationObserver(sync).observe(bar, { subtree: true, attributes: true, attributeFilter: ['class', 'aria-expanded'] });
+  })();
   // phones: fit the editing toolbar to the screen; extras go into a ⋯ sheet
   const KEEP_RX = /bold|italic|colou?r|align|move|add|paragraph|¶|block/i;
   function fitPropbar(inner) {
