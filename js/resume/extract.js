@@ -18,6 +18,7 @@
     declaration: ['declaration'],
   };
   const HEAD = new Map(); for (const k in DICT) for (const w of DICT[k]) HEAD.set(w, k);
+  const HEADNS = new Map(); for (const [w, k] of HEAD) if (!HEADNS.has(w.replace(/ /g, ''))) HEADNS.set(w.replace(/ /g, ''), k);   // letter-spaced headings
   const MON = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
   const D1 = `(?:${MON}\\s*,?\\s*'?\\d{2,4}|\\d{1,2}[/.]\\d{2,4}|(?:19|20)\\d{2})`;
   const RANGE_RE = new RegExp(`(${D1})\\s*(?:-|‐|‑|−|–|—|to|till|until)\\s*(${D1}|present|current|till date|now|ongoing|today|\\d{2}\\b)`, 'i');
@@ -50,7 +51,9 @@
   const tidy = (t) => { let s = clean(t); for (let i = 0; i < 4; i++) s = s.replace(/(?:\s*(?:[•·|–—]|\s-\s)\s*){2,}/g, ' · ').replace(/^\s*(?:[•·|,–—-]\s*)+|(?:\s*[•·|,–—-])+\s*$/g, '').trim(); return s; };
   const headKey = (t) => {
     let s = clean(t);
-    if (/^(?:[A-Za-z&] ){3,}[A-Za-z&]$/.test(s)) s = s.replace(/ /g, '');           // letter-spaced "E X P E R I E N C E"
+    if (/^(?:[A-Za-z&] ){3,}[A-Za-z&]$/.test(s)) { s = s.replace(/ /g, ''); const k = HEADNS.get(s.toLowerCase()); if (k) return k; }   // letter-spaced "E X P E R I E N C E" / "W O R K E X P E R I E N C E"
+    // letter-spaced with kerned pairs left joined ("S U M M A RY", "E D U C AT I O N", "AWA R D S"): match the heading with spaces ignored
+    else if (/^(?:[A-Za-z&]{1,3} ){3,}[A-Za-z&]{1,3}$/.test(s) && s.split(' ').filter((w) => w.length === 1).length >= 0.6 * s.split(' ').length) { const k = HEADNS.get(s.replace(/ /g, '').toLowerCase()); if (k) return k; }
     s = s.toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').replace(/[:：|\-–—_•.]+$/, '').replace(/^[^a-z]+/, '').replace(/\s+/g, ' ').trim();
     if (HEAD.has(s)) return HEAD.get(s);
     if (/[\/|]/.test(s)) { for (const part of s.split(/\s*[\/|]\s*/)) { const k = part && headKey(part); if (k) return k; } }   // bilingual "Experience / अनुभव"
@@ -87,8 +90,10 @@
       const lf = rows.filter((r) => r.x1 <= g.a + 0.5), rt = rows.filter((r) => r.x0 >= g.b - 0.5);
       const nar = (Math.max(0, ...lf.map((r) => r.x1 - r.x0)) >= Math.max(0, ...rt.map((r) => r.x1 - r.x0))) ? rt : lf, wide = nar === rt ? lf : rt;
       const dateRow = (r) => (findRange(r.text) || /^\s*(?:present|current)\s*$/i.test(r.text)) && clean(r.text).split(/\s+/).length <= 7;
-      const paired = nar.filter((r) => dateRow(r) && wide.some((q) => Math.abs(q.y - r.y) <= 0.3 * Math.max(q.size, r.size)));
-      if (nar.length && paired.length >= 0.6 * nar.length) g = null;
+      const beside = nar.filter((r) => wide.some((q) => Math.abs(q.y - r.y) <= 0.3 * Math.max(q.size, r.size))), paired = beside.filter(dateRow);
+      // also a table when nearly every narrow-side row shares a baseline with the other side and several are dates
+      // (a skills grid "Languages | Frameworks | Infrastructure" above "Role at Company ..... dates" rows)
+      if (nar.length && (paired.length >= 0.6 * nar.length || (paired.length >= 2 && beside.length >= 0.8 * nar.length))) g = null;
     }
     if (g) {
       const cross = rows.filter((r) => r.x0 < g.a - 0.5 && r.x1 > g.b + 0.5);
@@ -286,14 +291,17 @@
   }
   function skillChips(lines) {
     const out = [], seen = new Set();
-    const joined = [];   // a skill list wrapped over lines: "Automation" + "Anywhere, ..." is one item
-    for (const l of lines) { const p = joined[joined.length - 1]; if (p && !/[,|•·;:]\s*$/.test(p.text) && !/^[^:]{2,30}:/.test(l.text) && !BULLET_STRIP.test(l.text) && /^[A-Za-z]/.test(l.text)) p.text += ' ' + l.text; else joined.push({ text: l.text }); }
+    // a skill list wrapped over lines: "UiPath, Automation" + "Anywhere, ..." is one item. Only a list line (has a separator) or a
+    // long line wraps; short one-item lines ("Malayalam Native" / "English Fluent", "Tally" / "Excel") are items of their own.
+    const joined = [];
+    for (const l of lines) { const p = joined[joined.length - 1]; if (p && (/[,|•·;]/.test(p.text) || p.text.length >= 40) && !/[,|•·;:]\s*$/.test(p.text) && !/^[^:]{2,30}:/.test(l.text) && !BULLET_STRIP.test(l.text) && /^[A-Za-z]/.test(l.text)) { p.text += ' ' + l.text; p.parts.push(l.text); } else joined.push({ text: l.text, parts: [l.text] }); }
+    const chips = (t) => clean(t.replace(BULLET_STRIP, '').replace(/^[^:]{2,30}:\s*/, ''))   // "Languages: Java, C" -> chips only
+      .split(/\s*(?:,|\||•|·|;|\s{3,}|\/\/)\s*/).map((s) => clean(s.replace(/^and\s+/i, '').replace(/[★☆✩✪●○◉◯◦▪■□]/g, ' ')).replace(/[.]$/, '')).filter(Boolean);   // rating stars/dots ("Tally ★★★★") are not part of the skill
     for (const l of joined) {
-      let t = l.text.replace(BULLET_STRIP, '');
-      t = t.replace(/^[^:]{2,30}:\s*/, '');           // "Languages: Java, C" -> chips only
-      for (let s of t.split(/\s*(?:,|\||•|·|;|\s{3,}|\/\/)\s*/)) {
-        s = clean(s.replace(/^and\s+/i, '')).replace(/[.]$/, '');
-        if (!s || s.length > 40 || seen.has(s.toLowerCase())) continue;
+      let cs = chips(l.text);
+      if (l.parts.length > 1 && cs.some((s) => s.length > 40)) cs = l.parts.flatMap(chips);   // the join made an over-long item: keep the lines apart
+      for (const s of cs) {
+        if (s.length > 40 || seen.has(s.toLowerCase())) continue;
         seen.add(s.toLowerCase()); out.push({ name: s });
       }
     }
@@ -416,7 +424,12 @@
       } else if (s.key === 'education') {
         entries(s.lines, true).forEach((e) => { r.education.push(e.ent); conf['education.' + (r.education.length - 1)] = e.conf * (0.7 + 0.3 * hc); });
       } else if (s.key === 'skills') { r.skills.push(...skillChips(s.lines).filter((x) => !r.skills.some((y) => y.name.toLowerCase() === x.name.toLowerCase()))); conf.skills = 0.8 * hc + 0.15; }
-      else if (s.key === 'languages') { skillChips(s.lines).forEach((x) => r.languages.push({ language: x.name, fluency: '' })); }
+      else if (s.key === 'languages') {
+        // "Malayalam: Native" / "Tamil — native" is a language with its fluency (the "Label: a, b" rule would keep only "Native")
+        const FL = /^(?:native|mother tongue|fluent|proficient|professional|full professional|conversational|intermediate|advanced|basic|beginner|elementary|limited|working)\b/i, rest = [];
+        for (const l of s.lines) { const m = clean(String(l.text).replace(BULLET_STRIP, '')).match(/^([^:–—,]{2,30}?)\s*(?::|\s[–—-]\s)\s*(.{2,40})$/); if (m && FL.test(m[2])) r.languages.push({ language: m[1], fluency: m[2] }); else rest.push(l); }
+        skillChips(rest).forEach((x) => r.languages.push({ language: x.name, fluency: '' }));
+      }
       else if (s.key === 'interests') { skillChips(s.lines).forEach((x) => r.interests.push({ name: x.name })); }
       else if (s.key === 'awards') { bulletsFrom(s.lines).forEach((t) => r.awards.push({ title: t, date: '', awarder: '' })); }
       else if (s.key === 'personal') { P.personal = { title: s.title, text: s.lines.map((l) => l.text).join('\n') }; }
@@ -435,6 +448,23 @@
       const t = leftover.map((l) => l.text).join(' ');
       if (!r.basics.summary && t.length > 80) { r.basics.summary = t; conf['basics.summary'] = 0.5; }
       else if (t.replace(/[^A-Za-z0-9]/g, '').length >= 3) other.unshift({ title: 'Other', text: leftover.map((l) => l.text).join('\n'), unmapped: true });
+    }
+    // safety net: parsing above is unchanged; any block of source text that ended up nowhere in the resume
+    // is added to an amber "Check this" section so it is never silently lost. Only whole blocks
+    // (3+ lines in a row, or one long line) count, so stray bullets, page numbers and footers stay out.
+    {
+      const norm = (t) => String(t || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+      const hay = norm(JSON.stringify([r, other, P.personal, P.declaration]));
+      const words = new Set(hay.match(/[\p{L}\p{N}]{3,}/gu) || []);
+      const placed = (l) => { const w = norm(l.text).match(/[\p{L}\p{N}]{3,}/gu) || []; if (!w.length) return true; return w.filter((x) => words.has(x)).length / w.length >= 0.6; };
+      const skip = (l) => l === nm || l.hkey || contactish(l.text) || /^\s*(?:page\s*)?\d+(?:\s*(?:\/|of)\s*\d+)?\s*$/i.test(l.text) || norm(l.text).replace(/[^\p{L}\p{N}]/gu, '').length < 4;
+      const runs = []; let run = [];
+      all.forEach((l) => { if (skip(l)) return; if (!placed(l)) run.push(l); else if (run.length) { runs.push(run); run = []; } });
+      if (run.length) runs.push(run);
+      const lost = runs.filter((g) => g.length >= 3 || g.some((l) => l.text.length >= 60)).flat();
+      // bullet and rating glyphs ("English ○ ○ ○", "Over 1000 lines: • A. Banerjee") are dropped from the rescued text; inline bullets split lines
+      const rescued = lost.flatMap((l) => String(l.text).split(/\s+[•▪●➢➤►▸‣⁃]\s+/)).map((t) => clean(t.replace(BULLET_STRIP, '').replace(/[•▪◦●○■□➢➤►▸‣⁃✓✔]/g, ' ').replace(/(?:\s[-–—*·])+\s*$/, ''))).filter((t) => /[\p{L}\p{N}]{2}/u.test(t));
+      if (rescued.length) { other.push({ title: 'Check this', text: rescued.join('\n'), unmapped: true, rescued: true }); conf['custom.rescued'] = 0.3; }
     }
     P.custom = other;
     P.order = usedKeys.filter((k) => M().DEFAULT_ORDER.includes(k)).concat(M().DEFAULT_ORDER.filter((k) => !usedKeys.includes(k)));
