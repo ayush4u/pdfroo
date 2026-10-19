@@ -264,6 +264,16 @@
     el.addEventListener('input', () => { if (o.set) o.set(el.value); else obj[k] = el.value; schedule(); });
     return h('div', { class: 'rz-f' + (o.half ? ' half' : '') }, h('label', { for: id }, label), el);
   }
+  // LinkedIn, GitHub and any other profile links: one row each, all shown in the resume header
+  function linksField(b) {
+    b.profiles = b.profiles || [];
+    const net = (u) => /linkedin\.com/i.test(u) ? 'LinkedIn' : /github\.com/i.test(u) ? 'GitHub' : String(u).replace(/^https?:\/\/(?:www\.)?/i, '').split(/[/?#]/)[0];
+    const rows = b.profiles.map((p, i) => h('div', { class: 'rz-f rz-link-row' },
+      h('input', { class: 'rz-in', type: 'url', value: p.url || '', placeholder: 'linkedin.com/in/you', 'aria-label': 'Link ' + (i + 1), oninput: (e) => { p.url = e.target.value; p.network = net(p.url); schedule(); } }),
+      h('button', { type: 'button', class: 'rz-link', 'aria-label': 'Remove link ' + (i + 1), onclick: () => { b.profiles.splice(i, 1); schedule(); renderForm(); } }, '×')));
+    return h('div', { class: 'rz-f' }, h('label', null, 'LinkedIn, GitHub & other links'), ...rows,
+      h('button', { type: 'button', class: 'rz-link', onclick: () => { b.profiles.push({ network: '', url: '' }); renderForm(); } }, '+ Add link'));
+  }
   function secCtl(key) {
     const P = S.R.meta.pdfroo, i = P.order.indexOf(key);
     const mv = (d) => { const j = i + d; if (j < 0 || j >= P.order.length) return; [P.order[i], P.order[j]] = [P.order[j], P.order[i]]; schedule(); renderForm(); };
@@ -304,7 +314,8 @@
       inField('Full name', b, 'name', { half: true, ph: 'Ananya Iyer' }), inField('Job title', b, 'label', { half: true, ph: 'Product Designer' }),
       inField('Email', b, 'email', { half: true, type: 'email' }), inField('Phone', b, 'phone', { half: true, type: 'tel' }),
       inField('City', b.location, 'city', { half: true }), inField('State / country', b.location, 'region', { half: true }),
-      inField('Website or LinkedIn', b, 'url', { get: () => b.url || ((b.profiles || [])[0] || {}).url || '', set: (v) => { b.url = v; b.profiles = []; } }))));
+      inField('Website / portfolio', b, 'url', { ph: 'yourname.github.io' }),
+      linksField(b))));
     for (const k of P.order) {
       const name = M.SECTION_NAMES[k];
       if (k === 'summary') f.appendChild(card(name, k, inField('Summary', b, 'summary', { area: true, rows: 3, ph: 'Two lines about you' }), secCtl(k)));

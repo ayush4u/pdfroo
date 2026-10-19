@@ -228,3 +228,4 @@ body.rz-open > #landing, body.rz-open > #editor { display: none !important; }
 .rz-fit-btn{white-space:nowrap}
 .rz-fit-n{font-weight:600;white-space:nowrap;padding:2px 8px;border-radius:999px;background:#fff;border:1px solid #e8d3b8}
 .rz-x.rz-x-in{position:static;margin-left:6px;width:22px;height:22px;line-height:20px;font-size:16px;vertical-align:middle}
+.rz-link-row { flex-direction: row; align-items: center; margin-bottom: 6px; } .rz-link-row .rz-in { flex: 1; } .rz-link-row .rz-link { min-width: 44px; min-height: 44px; }

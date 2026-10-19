@@ -37,6 +37,8 @@
   const PHONE_IN = /(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b/;
   const PHONE_ANY = /\+?\(?\d[\d\s().-]{8,}\d/;
   const URL_RES = [/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/[\w%-]+\/?/i, /(?:https?:\/\/)?(?:www\.)?github\.com\/[\w-]+/i, /https?:\/\/[^\s|,]+/i];
+  // bare domain with a real TLD, optional path; not part of an email, not a file name like Node.js
+  const BARE_URL_RE = /(?:^|[\s|·,(])((?:www\.)?[a-z0-9][\w-]*(?:\.[\w-]+)*\.(?:com|io|in|dev|me|org|net|co|xyz|site|app|ai|tech|page|github\.io|vercel\.app|netlify\.app)(?:\/[^\s|,·()]*)?)(?=$|[\s|·,)])/gi;
   const BULLET_STRIP = /^\s*(?:[•\-–—▪◦●○■□➢➤►▸*·‣⁃✓✔]|\(?\d{1,2}[.)]|[a-z][.)](?=\s))\s*/;
   const MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
   const yr = (y) => { y = String(y).replace(/\D/g, ''); return y.length === 2 ? (+y > 50 ? '19' : '20') + y : y; };
@@ -378,6 +380,8 @@
     if (nPages > 6) return { refusal: 'too-many-pages', message: 'This doesn’t look like a resume (more than 6 pages) — edit it as a PDF instead.' };
     const pages = [];
     for (let i = 0; i < Math.min(nPages, opts.maxPages || 6); i++) pages.push(await pageLines(src, i));
+    let pageLinks = [];
+    try { const pg0 = pages[0] && pages[0].page, v0 = pages[0] && pages[0].view; if (pg0 && pg0.getAnnotations) pageLinks = (await pg0.getAnnotations()).filter((a) => a.subtype === 'Link' && /^https?:/i.test(a.url || '') && (!v0 || !a.rect || a.rect[3] > v0[3] - 0.25 * (v0[3] - v0[1]))).map((a) => a.url); } catch (e) { pageLinks = []; }
     let all = pages.flatMap((p) => p.lines), ocr = false;
     if (!all.length && opts.ocr !== false) { const op = await ocrPages(src, Math.min(nPages, 2), opts.onStatus); if (op.length) { pages.splice(0, pages.length, ...op); all = op.flatMap((p) => p.lines); ocr = true; } }
     const bodyCounts = {}; all.forEach((l) => { const k = Math.round(l.size * 2) / 2; bodyCounts[k] = (bodyCounts[k] || 0) + l.text.length; });
@@ -423,7 +427,22 @@
     const nm = best && best.l;
     if (best) { r.basics.name = best.t; if (/^(?:[A-Z] ){2,}[A-Z]/.test(r.basics.name)) r.basics.name = r.basics.name.replace(/(\S) (?=\S)/g, '$1').replace(/\s+/g, ' '); conf['basics.name'] = nm.size >= body * 1.3 || emHit(best.t) ? 0.92 : 0.55; }
     if (r.basics.name && r.basics.name === r.basics.name.toUpperCase()) r.basics.name = r.basics.name.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
-    for (const re of URL_RES) { const m = text.match(re); if (m) { const u = m[0]; if (/linkedin/i.test(u)) r.basics.profiles.push({ network: 'LinkedIn', url: u }); else if (/github/i.test(u)) r.basics.profiles.push({ network: 'GitHub', url: u }); else if (!r.basics.url) r.basics.url = u; } }
+    // links: every distinct one survives (website + all profiles): explicit URLs, bare domains in the header
+    // (ayush4u.github.io/portfolio), and the PDF's clickable link annotations near the top of page 1
+    const seenL = new Set(), others = [];
+    const addLink = (u) => {
+      u = String(u || '').trim().replace(/[).,;:]+$/, ''); if (!u || /^(?:mailto|tel):/i.test(u) || (/@/.test(u) && !/^https?:/i.test(u))) return;
+      const k = u.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, ''); if (!k || seenL.has(k)) return; seenL.add(k);
+      if (/linkedin\.com\//i.test(u)) r.basics.profiles.push({ network: 'LinkedIn', url: u });
+      else if (/(?:^|[/.])github\.com\//i.test(u)) r.basics.profiles.push({ network: 'GitHub', url: u });
+      else others.push(u);
+    };
+    for (const re of URL_RES) { const m = text.match(re); if (m) addLink(m[0]); }
+    const topText = top.map((l) => l.text).join(' · ');
+    for (const m of topText.matchAll(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/[\w%-]+\/?|(?:https?:\/\/)?(?:www\.)?github\.com\/[\w-]+|https?:\/\/[^\s|,·]+/gi)) addLink(m[0]);
+    for (const m of topText.matchAll(BARE_URL_RE)) if (!/@$/.test(topText.slice(0, m.index)) && topText[m.index + m[0].length] !== '@') addLink(m[1]);
+    if (pageLinks && pageLinks.length) pageLinks.forEach(addLink);
+    others.forEach((u) => { if (!r.basics.url) r.basics.url = u; else r.basics.profiles.push({ network: u.replace(/^https?:\/\/(?:www\.)?/i, '').split(/[/?#]/)[0], url: u }); });
     const REG = 'India|USA|UK|Canada|Germany|Singapore|UAE|Australia|Maharashtra|Karnataka|Tamil Nadu|Kerala|Telangana|Andhra Pradesh|Gujarat|Rajasthan|Punjab|Haryana|Delhi|Uttar Pradesh|Madhya Pradesh|West Bengal|Bihar|Odisha|Assam|Goa|Jharkhand|Chhattisgarh|Uttarakhand|Himachal Pradesh|Jammu and Kashmir|NCR|[A-Z]{2}';
     const loc = top.map((l) => l.text).join(' · ').match(new RegExp('\\b([A-Z][a-zA-Z]+(?:\\s[A-Z][a-zA-Z]+)?),\\s*(' + REG + ')\\b'));
     if (loc && loc[0] !== r.basics.name && !/manager|engineer|developer|designer|analyst/i.test(loc[1])) { r.basics.location = { city: loc[1], region: loc[2] }; conf['basics.location'] = 0.6; }
