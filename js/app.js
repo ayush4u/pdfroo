@@ -38,14 +38,24 @@
   const fileInput = $('#fileInput'), mergeInput = $('#mergeInput'), imageInput = $('#imageInput');
 
   /* ---------------- Utilities ---------------- */
+  // one toast at a time (a new one replaces the old), above the phone's bottom bars without covering them, 44px close target
+  function toastBottom() {
+    if (!isPhone()) return '';
+    const tops = ['.toolbar-wrap', '.propbar'].map((q) => document.querySelector(q)).filter((e) => e && e.offsetParent && e.offsetHeight).map((e) => e.getBoundingClientRect().top);
+    return tops.length ? Math.round(window.innerHeight - Math.min(...tops) + 8) + 'px' : '';
+  }
+  function clearToasts() { document.querySelectorAll('.toast, .coffee-toast').forEach((e) => e.remove()); }
   function toast(msg, type) {
+    clearToasts();
     const el = document.createElement('div');
-    el.className = 'toast ' + (type || '');
+    el.className = 'toast ' + (type || ''); el.setAttribute('role', type === 'error' ? 'alert' : 'status');
     const icon = type === 'error' ? 'i-x' : type === 'ok' ? 'i-check' : 'i-sparkle';
-    el.innerHTML = `<svg class="i"><use href="#${icon}"/></svg><span></span>`;
+    el.innerHTML = `<svg class="i"><use href="#${icon}"/></svg><span></span><button class="toast-x" type="button" aria-label="Dismiss"><svg class="i"><use href="#i-x"/></svg></button>`;
     el.querySelector('span').textContent = msg;
-    $('#toasts').appendChild(el);
-    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, type === 'error' ? 7000 : 2600);
+    const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 300); };
+    el.querySelector('.toast-x').addEventListener('click', close);
+    const box = $('#toasts'); box.style.bottom = toastBottom(); box.appendChild(el);
+    setTimeout(close, type === 'error' ? 7000 : 2600);
   }
   /** "Go enjoy a coffee" — a small treat after a successful download; at most once per browser session. */
   let coffeeShown = false;
@@ -64,6 +74,7 @@
       el.querySelector('.coffee-close').addEventListener('click', close);
       // inside an open modal dialog (e.g. Compress) so it sits above the backdrop and its close button stays clickable
       const host = [...document.querySelectorAll('dialog[open]')].pop() || document.body;
+      clearToasts(); if (host === document.body) el.style.bottom = toastBottom();
       host.appendChild(el);
       setTimeout(close, 6000);
     }, 700);
@@ -2541,6 +2552,7 @@
       const nm = document.createElement('span'); nm.textContent = f.name;
       const ct = document.createElement('span'); ct.className = 'find-count'; ct.textContent = hs.length + (hs.length === 1 ? ' match' : ' matches');
       hd.append(cb, nm, ct); g.append(hd);
+      hd.addEventListener('click', (e) => { if (e.target !== cb && !cb.disabled) cb.click(); });   // the whole header row toggles it
       notes.forEach((n) => { const d = document.createElement('div'); d.className = 'find-note'; d.textContent = (n.pageIndex >= 0 ? `Page ${n.pageIndex + 1}: ` : '') + n.message + (n.code === 'scan' || /scan/i.test(n.message) ? ' Its text can’t be searched.' : ''); g.append(d); });
       let lastPage = -1;
       for (const h of hs) {

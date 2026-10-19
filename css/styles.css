@@ -1148,3 +1148,26 @@ body.kb-open .pager { display: none; }
 @media (max-width: 640px) { .ed-top #rzEdBtn { display: none; } }
 #rzEdBtn .i { width: 16px; height: 16px; }
 .hdr-menu .tb-item[hidden] { display: none; }
+/* toasts: one at a time, 44px close target */
+.toast-x { flex: none; width: 44px; height: 44px; margin: -11px -12px -11px -4px; display: grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: inherit; opacity: .75; cursor: pointer; }
+.toast-x:hover { opacity: 1; }
+.toast-x .i { width: 16px; height: 16px; color: inherit !important; }
+.coffee-toast .coffee-close { width: 44px; height: 44px; margin: -7px -7px 0 0; }
+/* compress dialog on phones: title and ✕ stay pinned while the body scrolls */
+@media (max-width: 640px) {
+  .compress-inner .dialog-head { position: sticky; top: 0; z-index: 5; background: var(--surface); margin: -14px -16px 0; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--border); }
+  .compress-inner .dialog-head .icon-btn { width: 44px; height: 44px; }
+}
+/* find & replace on phones: whole option labels are 44px targets; the files row wraps so Add PDFs isn't cut off */
+@media (max-width: 640px), (pointer: coarse) {
+  .find-opts .chk { min-height: 44px; padding: 0 10px 0 4px; border-radius: 10px; gap: 10px; }
+  .find-opts .chk input, .find-group-head input, .find-chk { width: 22px; height: 22px; }
+  .find-row { min-height: 44px; align-items: center; }
+  .find-group-head { min-height: 44px; }
+  .find-file-x { width: 44px; height: 44px; margin: -10px -6px -10px -8px; }
+}
+@media (max-width: 640px) {
+  .find-files { flex-wrap: wrap; overflow: visible; }
+  .find-file-list { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .find-file { max-width: 100%; min-width: 0; }
+}
