@@ -318,7 +318,8 @@
     const pw = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
     const ph = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
     const w = viewport.clientWidth - pw, h = viewport.clientHeight - ph;
-    return clamp(Math.min(w / ds.w, h / ds.h), 0.1, 4);
+    // phones open at fit-width (fit-page leaves body text ~5 px tall); desktop keeps fit-page
+    return clamp(isPhone() ? w / ds.w : Math.min(w / ds.w, h / ds.h), 0.1, 4);
   }
 
   function layoutPage() {
